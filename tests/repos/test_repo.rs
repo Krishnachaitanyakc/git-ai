@@ -60,60 +60,11 @@ impl TestRepo {
     }
 
     pub fn git_ai(&self, args: &[&str]) -> Result<String, String> {
-        let binary_path = get_binary_path();
-
-        let output = Command::new(binary_path)
-            .args(args)
-            .current_dir(&self.path)
-            .output()
-            .expect(&format!("Failed to execute git-ai command: {:?}", args));
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if output.status.success() {
-            // Combine stdout and stderr since git-ai often writes to stderr
-            let combined = if stdout.is_empty() {
-                stderr
-            } else if stderr.is_empty() {
-                stdout
-            } else {
-                format!("{}{}", stdout, stderr)
-            };
-            Ok(combined)
-        } else {
-            Err(stderr)
-        }
+        return self.git_ai_with_env(args, &[]);
     }
 
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
-        let binary_path = get_binary_path();
-
-        let mut full_args = vec!["-C", self.path.to_str().unwrap()];
-        full_args.extend(args);
-
-        let output = Command::new(binary_path)
-            .args(&full_args)
-            .env("GIT_AI", "git")
-            .output()
-            .expect(&format!("Failed to execute git command: {:?}", args));
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        if output.status.success() {
-            // Combine stdout and stderr since git often writes to stderr
-            let combined = if stdout.is_empty() {
-                stderr
-            } else if stderr.is_empty() {
-                stdout
-            } else {
-                format!("{}{}", stdout, stderr)
-            };
-            Ok(combined)
-        } else {
-            Err(stderr)
-        }
+        return self.git_with_env(args, &[]);
     }
 
     pub fn git_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Result<String, String> {
@@ -214,7 +165,16 @@ impl TestRepo {
     }
 
     pub fn commit(&self, message: &str) -> Result<NewCommit, String> {
-        let output = self.git(&["commit", "-m", message]);
+        return self.commit_with_env(message, &[]);
+    }
+
+    pub fn stage_all_and_commit(&self, message: &str) -> Result<NewCommit, String> {
+        self.git(&["add", "-A"]).expect("add --all should succeed");
+        self.commit(message)
+    }
+
+    pub fn commit_with_env(&self, message: &str, envs: &[(&str, &str)]) -> Result<NewCommit, String> {
+        let output = self.git_with_env(&["commit", "-m", message], envs);
 
         // println!("commit output: {:?}", output);
         if output.is_ok() {
@@ -248,11 +208,6 @@ impl TestRepo {
         } else {
             Err(output.unwrap_err())
         }
-    }
-
-    pub fn stage_all_and_commit(&self, message: &str) -> Result<NewCommit, String> {
-        self.git(&["add", "-A"]).expect("add --all should succeed");
-        self.commit(message)
     }
 
     pub fn read_file(&self, filename: &str) -> Option<String> {

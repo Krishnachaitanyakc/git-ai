@@ -353,3 +353,143 @@ fn test_cursor_e2e_with_attribution() {
         "Model should be 'gpt-5' from test database"
     );
 }
+
+#[test]
+fn test_cursor_e2e_with_resync() {
+    use std::fs;
+    use rusqlite::Connection;
+    use tempfile::TempDir;
+
+    let repo = TestRepo::new();
+    let db_path = fixture_path("cursor_test.vscdb");
+    let db_path_str = db_path.to_string_lossy().to_string();
+
+    // Create a temp directory for the modified database
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_db_path = temp_dir.path().join("modified_cursor_test.vscdb");
+
+    // Copy the fixture database to the temp location
+    fs::copy(&db_path, &temp_db_path).expect("Failed to copy database");
+
+    // Modify one of the messages in the temp database
+    {
+        let conn = Connection::open(&temp_db_path).expect("Failed to open temp database");
+        
+        // Find and update one of the bubble messages with recognizable text
+        // First, get a bubble key
+        let bubble_key: String = conn
+            .query_row(
+                "SELECT key FROM cursorDiskKV WHERE key LIKE 'bubbleId:00812842-49fe-4699-afae-bb22cda3f6e1:%' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("Should find at least one bubble");
+
+        // Get the current value and parse it as JSON
+        let current_value: String = conn
+            .query_row(
+                "SELECT value FROM cursorDiskKV WHERE key = ?",
+                [&bubble_key],
+                |row| row.get(0),
+            )
+            .expect("Should get bubble value");
+
+        let mut bubble_json: serde_json::Value =
+            serde_json::from_str(&current_value).expect("Should parse bubble JSON");
+
+        // Modify the text field with our recognizable marker
+        if let Some(obj) = bubble_json.as_object_mut() {
+            obj.insert(
+                "text".to_string(),
+                serde_json::Value::String("RESYNC_TEST_MESSAGE: This message was updated after checkpoint".to_string()),
+            );
+        }
+
+        // Update the database with the modified JSON
+        let updated_value = serde_json::to_string(&bubble_json).expect("Should serialize JSON");
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ? WHERE key = ?",
+            [&updated_value, &bubble_key],
+        )
+        .expect("Should update bubble");
+    }
+
+    // Create parent directory for the test file
+    let src_dir = repo.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+
+    // Create initial file with some base content
+    let file_path = repo.path().join("src/main.rs");
+    let base_content = "fn main() {\n    println!(\"Hello, World!\");\n}\n";
+    fs::write(&file_path, base_content).unwrap();
+
+    repo.stage_all_and_commit("Initial commit").unwrap();
+
+    // Simulate cursor making edits to the file
+    let edited_content = "fn main() {\n    println!(\"Hello, World!\");\n    // This is from Cursor\n    println!(\"Additional line from Cursor\");\n}\n";
+    fs::write(&file_path, edited_content).unwrap();
+
+    // Run checkpoint with the ORIGINAL database (not yet modified)
+    let hook_input = serde_json::json!({
+        "conversation_id": TEST_CONVERSATION_ID,
+        "workspace_roots": [repo.canonical_path().to_string_lossy().to_string()],
+        "hook_event_name": "afterFileEdit",
+        "file_path": file_path.to_string_lossy().to_string()
+    }).to_string();
+
+    let result = repo
+        .git_ai_with_env(
+            &["checkpoint", "cursor", "--hook-input", &hook_input],
+            &[("GIT_AI_CURSOR_GLOBAL_DB_PATH", &db_path_str)],
+        )
+        .unwrap();
+
+    println!("Checkpoint output: {}", result);
+
+    // Now commit with the MODIFIED database - this tests the resync logic in post_commit
+    let temp_db_path_str = temp_db_path.to_string_lossy().to_string();
+    repo.git(&["add", "-A"]).expect("add --all should succeed");
+    let commit = repo.commit_with_env("Add cursor edits", &[("GIT_AI_CURSOR_GLOBAL_DB_PATH", &temp_db_path_str)]).unwrap();
+
+    // Verify attribution still works
+    let mut file = repo.filename("src/main.rs");
+    file.assert_lines_and_blame(lines![
+        "fn main() {".human(),
+        "    println!(\"Hello, World!\");".human(),
+        "    // This is from Cursor".ai(),
+        "    println!(\"Additional line from Cursor\");".ai(),
+        "}".human(),
+    ]);
+
+    // Verify the authorship log contains attestations and prompts
+    assert!(
+        commit.authorship_log.attestations.len() > 0,
+        "Should have at least one attestation"
+    );
+
+    // Verify the metadata has prompts with transcript data
+    assert!(
+        commit.authorship_log.metadata.prompts.len() > 0,
+        "Should have at least one prompt record in metadata"
+    );
+
+    // Get the first prompt record
+    let prompt_record = commit
+        .authorship_log
+        .metadata
+        .prompts
+        .values()
+        .next()
+        .expect("Should have at least one prompt record");
+
+    // Verify that the resync logic picked up the updated message
+    let transcript_json = serde_json::to_string(&prompt_record.messages)
+        .expect("Should serialize messages");
+    
+    assert!(
+        transcript_json.contains("RESYNC_TEST_MESSAGE"),
+        "Resync logic should have picked up the updated message from the modified database"
+    );
+
+    // The temp directory and database will be automatically cleaned up when temp_dir goes out of scope
+}
