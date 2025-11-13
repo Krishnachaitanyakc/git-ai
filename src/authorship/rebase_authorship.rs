@@ -5,10 +5,7 @@ use crate::git::refs::get_reference_as_authorship_log_v3;
 use crate::git::repository::Repository;
 use crate::git::rewrite_log::RewriteLogEvent;
 use crate::utils::debug_log;
-use std::{
-    collections::{HashMap, HashSet},
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
 
 // Process events in the rewrite log and call the correct rewrite functions in this file
 pub fn rewrite_authorship_if_needed(

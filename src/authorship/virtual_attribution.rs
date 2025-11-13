@@ -3,7 +3,7 @@ use crate::authorship::attribution_tracker::{
 };
 use crate::authorship::authorship_log::{LineRange, PromptRecord};
 use crate::authorship::working_log::CheckpointKind;
-use crate::commands::blame::GitAiBlameOptions;
+use crate::commands::blame::{GitAiBlameOptions, OLDEST_AI_BLAME_DATE};
 use crate::error::GitAiError;
 use crate::git::repository::Repository;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -283,21 +283,6 @@ impl VirtualAttributions {
     /// Get a reference to the repository
     pub fn repo(&self) -> &Repository {
         &self.repo
-    }
-
-    /// Create VirtualAttributions from current repository state (HEAD + working log)
-    #[allow(dead_code)]
-    pub async fn from_repo_state(
-        repo: Repository,
-        pathspecs: &[String],
-    ) -> Result<Self, GitAiError> {
-        // Step 1: Get HEAD SHA
-        let head_ref = repo.head()?;
-        let head_sha = head_ref.target()?;
-
-        // Step 2: Use new_for_base_commit to establish authorship for all pathspecs
-        // This will run blame to find all old authorship and discover prompts from history
-        Self::new_for_base_commit(repo, head_sha, pathspecs, None).await
     }
 
     /// Create VirtualAttributions from just the working log (no blame)
@@ -1370,7 +1355,8 @@ fn compute_attributions_for_file(
     ai_blame_opts.return_human_authors_as_human = true;
     ai_blame_opts.use_prompt_hashes_as_names = true;
     ai_blame_opts.newest_commit = Some(base_commit.to_string());
-    ai_blame_opts.oldest_commit = blame_start_commit.clone();
+    ai_blame_opts.oldest_commit = blame_start_commit;
+    ai_blame_opts.oldest_date = Some(OLDEST_AI_BLAME_DATE.clone());
 
     // Run blame at the base commit
     let ai_blame = repo.blame(file_path, &ai_blame_opts);

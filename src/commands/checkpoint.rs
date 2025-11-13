@@ -1,7 +1,7 @@
 use crate::authorship::attribution_tracker::{Attribution, AttributionTracker, LineAttribution};
 use crate::authorship::working_log::CheckpointKind;
 use crate::authorship::working_log::{Checkpoint, WorkingLogEntry};
-use crate::commands::blame::GitAiBlameOptions;
+use crate::commands::blame::{GitAiBlameOptions, OLDEST_AI_BLAME_DATE};
 use crate::commands::checkpoint_agent::agent_presets::AgentRunResult;
 use crate::error::GitAiError;
 use crate::git::repo_storage::{PersistedWorkingLog, RepoStorage};
@@ -534,6 +534,7 @@ fn get_checkpoint_entry_for_file(
         ai_blame_opts.return_human_authors_as_human = true;
         ai_blame_opts.use_prompt_hashes_as_names = true;
         ai_blame_opts.newest_commit = head_commit_sha.as_ref().clone();
+        ai_blame_opts.oldest_date = Some(OLDEST_AI_BLAME_DATE.clone());
         let ai_blame = repo.blame(&file_path, &ai_blame_opts);
 
         // Start with INITIAL attributions (they win)

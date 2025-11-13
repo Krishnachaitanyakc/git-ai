@@ -11,6 +11,15 @@ use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
+use std::sync::LazyLock;
+
+//🐰🥚 @todo use actual date Git AI was installed in each repo
+pub static OLDEST_AI_BLAME_DATE: LazyLock<DateTime<FixedOffset>> = LazyLock::new(|| {
+    FixedOffset::east_opt(0)
+        .unwrap()
+        .with_ymd_and_hms(2025, 7, 4, 0, 0, 0)
+        .unwrap()
+});
 
 #[derive(Debug, Clone)]
 pub struct BlameHunk {
@@ -50,6 +59,7 @@ pub struct GitAiBlameOptions {
 
     pub newest_commit: Option<String>,
     pub oldest_commit: Option<String>,
+    pub oldest_date: Option<DateTime<FixedOffset>>,
 
     // Output format options
     pub porcelain: bool,
@@ -117,6 +127,7 @@ impl Default for GitAiBlameOptions {
             porcelain: false,
             newest_commit: None,
             oldest_commit: None,
+            oldest_date: None,
             line_porcelain: false,
             incremental: false,
             show_name: false,
@@ -357,6 +368,13 @@ impl Repository {
         // Limit to specified range
         args.push("-L".to_string());
         args.push(format!("{},{}", start_line, end_line));
+
+        // Add --since flag if oldest_date is specified
+        // This controls the absolute lower bound of how far back to look
+        if let Some(ref date) = options.oldest_date {
+            args.push("--since".to_string());
+            args.push(date.to_rfc3339());
+        }
 
         // Support newest_commit option (equivalent to libgit2's newest_commit)
         // This limits blame to only consider commits up to and including the specified commit
@@ -1334,6 +1352,23 @@ pub fn parse_blame_args(args: &[String]) -> Result<(String, GitAiBlameOptions), 
                     ));
                 }
                 options.encoding = Some(args[i + 1].clone());
+                i += 2;
+            }
+
+            // Date filtering
+            "--since" => {
+                if i + 1 >= args.len() {
+                    return Err(GitAiError::Generic(
+                        "Missing argument for --since".to_string(),
+                    ));
+                }
+                options.oldest_date = Some(
+                    DateTime::parse_from_rfc3339(&args[i + 1])
+                        .map_err(|e| {
+                            GitAiError::Generic(format!("Invalid date format for --since: {}", e))
+                        })?
+                        .into(),
+                );
                 i += 2;
             }
 
