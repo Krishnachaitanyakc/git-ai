@@ -6,8 +6,8 @@ use crate::commands::checkpoint_agent::agent_presets::{CursorPreset, GithubCopil
 use crate::error::GitAiError;
 use crate::git::refs::notes_add;
 use crate::git::repository::Repository;
-use std::io::IsTerminal;
 use std::collections::{HashMap, HashSet};
+use std::io::IsTerminal;
 
 pub fn post_commit(
     repo: &Repository,
@@ -171,7 +171,7 @@ fn update_prompts_to_latest(checkpoints: &mut [Checkpoint]) -> Result<(), GitAiE
                             Some((latest_transcript, latest_model))
                         }
                         Ok(None) => None,
-                        Err(e) => {
+                        Err(_e) => {
                             // TODO Log error to sentry
                             None
                         }
@@ -182,14 +182,15 @@ fn update_prompts_to_latest(checkpoints: &mut [Checkpoint]) -> Result<(), GitAiE
                     if let Some(metadata) = &checkpoint.agent_metadata {
                         if let Some(chat_session_path) = metadata.get("chat_session_path") {
                             // Try to read and parse the chat session JSON
-                            if let Ok(session_content) = std::fs::read_to_string(chat_session_path) {
+                            if let Ok(session_content) = std::fs::read_to_string(chat_session_path)
+                            {
                                 match GithubCopilotPreset::transcript_and_model_from_copilot_session_json(&session_content) {
                                     Ok((transcript, model, _)) => {
                                         // Update to the latest transcript (similar to Cursor behavior)
                                         // This handles both cases: initial load failure and getting latest version
                                         Some((transcript, model.unwrap_or_else(|| agent_id.model.clone())))
                                     }
-                                    Err(e) => {
+                                    Err(_e) => {
                                         // TODO Log error to sentry
                                         None
                                     }

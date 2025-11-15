@@ -990,6 +990,8 @@ impl VirtualAttributions {
     ///
     /// This is useful for retroactively generating authorship logs from working logs
     /// where we know the commit has landed and don't care about uncommitted work.
+    // only being used by stats-delta in a fork
+    #[allow(dead_code)]
     pub fn to_authorship_log_index_only(
         &self,
         repo: &Repository,
