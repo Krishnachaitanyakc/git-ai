@@ -6,25 +6,38 @@ use std::path::PathBuf;
 ///
 /// This is checked once at module initialization to avoid repeated environment variable lookups.
 static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-static DEBUG_PERFORMANCE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static DEBUG_PERFORMANCE_LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
 
 fn is_debug_enabled() -> bool {
     *DEBUG_ENABLED.get_or_init(|| {
         cfg!(debug_assertions)
             || std::env::var("GIT_AI_DEBUG").unwrap_or_default() == "1"
-            || std::env::var("GIT_AI_DEBUG_PERFORMANCE").unwrap_or_default() == "1"
+            || std::env::var("GIT_AI_DEBUG_PERFORMANCE").unwrap_or_default() != ""
     })
 }
 
 fn is_debug_performance_enabled() -> bool {
-    is_debug_enabled()
-        && *DEBUG_PERFORMANCE_ENABLED
-            .get_or_init(|| std::env::var("GIT_AI_DEBUG_PERFORMANCE").unwrap_or_default() == "1")
+    debug_performance_level() >= 1
+}
+
+fn debug_performance_level() -> u8 {
+    *DEBUG_PERFORMANCE_LEVEL.get_or_init(|| {
+        std::env::var("GIT_AI_DEBUG_PERFORMANCE")
+            .unwrap_or_default()
+            .parse::<u8>()
+            .unwrap_or(0)
+    })
 }
 
 pub fn debug_performance_log(msg: &str) {
     if is_debug_performance_enabled() {
         eprintln!("\x1b[1;33m[git-ai (perf)]\x1b[0m {}", msg);
+    }
+}
+
+pub fn debug_performance_log_structured(json: serde_json::Value) {
+    if debug_performance_level() >= 2 {
+        eprintln!("\x1b[1;33m[git-ai (perf-json)]\x1b[0m {}", json);
     }
 }
 
@@ -76,7 +89,6 @@ pub fn _print_diff(diff: &Diff, old_label: &str, new_label: &str) {
     }
 }
 
-
 #[inline]
 pub fn normalize_to_posix(path: &str) -> String {
     path.replace('\\', "/")
@@ -84,26 +96,30 @@ pub fn normalize_to_posix(path: &str) -> String {
 
 pub fn current_git_ai_exe() -> Result<PathBuf, GitAiError> {
     let path = std::env::current_exe()?;
-    
+
     // Get platform-specific executable names
     let git_name = if cfg!(windows) { "git.exe" } else { "git" };
-    let git_ai_name = if cfg!(windows) { "git-ai.exe" } else { "git-ai" };
-    
+    let git_ai_name = if cfg!(windows) {
+        "git-ai.exe"
+    } else {
+        "git-ai"
+    };
+
     // Check if the filename matches the git executable name for this platform
     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
         if file_name == git_name {
             // Try replacing with git-ai executable name for this platform
             let git_ai_path = path.with_file_name(git_ai_name);
-            
+
             // Check if the git-ai file exists
             if git_ai_path.exists() {
                 return Ok(git_ai_path);
             }
-            
+
             // If it doesn't exist, return the git-ai executable name as a PathBuf
             return Ok(PathBuf::from(git_ai_name));
         }
     }
-    
+
     Ok(path)
 }

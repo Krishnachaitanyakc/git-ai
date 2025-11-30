@@ -3,11 +3,22 @@ use std::{ops::Add, time::Duration};
 use serde_json::json;
 
 use crate::{
-    authorship::working_log::CheckpointKind, observability::log_performance,
-    utils::debug_performance_log,
+    authorship::working_log::CheckpointKind,
+    observability::log_performance,
+    utils::{debug_performance_log, debug_performance_log_structured},
 };
 
 const PERFORMANCE_FLOOR_MS: Duration = Duration::from_millis(70);
+
+/// Performance benchmark result containing timing breakdowns
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct BenchmarkResult {
+    pub total_duration: Duration,
+    pub git_duration: Duration,
+    pub post_command_duration: Duration,
+    pub pre_command_duration: Duration,
+}
 
 pub fn log_performance_target_if_violated(
     command: &str,
@@ -41,6 +52,17 @@ pub fn log_performance_target_if_violated(
         }
         _ => git_duration.add(PERFORMANCE_FLOOR_MS) >= total_duration,
     };
+
+    let perf_json = json!({
+        "command": command,
+        "total_duration_ms": total_duration.as_millis(),
+        "git_duration_ms": git_duration.as_millis(),
+        "pre_command_duration_ms": pre_command.as_millis(),
+        "post_command_duration_ms": post_command.as_millis(),
+        "within_target": within_target,
+    });
+
+    debug_performance_log_structured(perf_json);
 
     if !within_target {
         debug_performance_log(&format!(

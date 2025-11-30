@@ -2,6 +2,7 @@ use git_ai::authorship::authorship_log_serialization::AuthorshipLog;
 use git_ai::authorship::stats::CommitStats;
 use git_ai::git::repo_storage::PersistedWorkingLog;
 use git_ai::git::repository as GitAiRepository;
+use git_ai::observability::wrapper_performance_targets::BenchmarkResult;
 use git2::Repository;
 use insta::assert_debug_snapshot;
 use rand::Rng;
@@ -9,6 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use super::test_file::TestFile;
 
@@ -33,6 +35,18 @@ impl TestRepo {
             .expect("failed to initialize git2 repository");
 
         Self { path }
+    }
+
+    pub fn new_at_path(path: &PathBuf) -> Self {
+        let repo = Repository::init(path).expect("failed to initialize git2 repository");
+        let mut config = Repository::config(&repo).expect("failed to initialize git2 repository");
+        config
+            .set_str("user.name", "Test User")
+            .expect("failed to initialize git2 repository");
+        config
+            .set_str("user.email", "test@example.com")
+            .expect("failed to initialize git2 repository");
+        Self { path: path.clone() }
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -65,6 +79,39 @@ impl TestRepo {
 
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
         return self.git_with_env(args, &[]);
+    }
+
+    pub fn benchmark_git(&self, args: &[&str]) -> Result<BenchmarkResult, String> {
+        let output = self.git_with_env(args, &[("GIT_AI_DEBUG_PERFORMANCE", "2")])?;
+
+        // Find the JSON performance line
+        for line in output.lines() {
+            if line.contains("[git-ai (perf-json)]") {
+                // Extract the JSON part after the colored prefix
+                if let Some(json_start) = line.find('{') {
+                    let json_str = &line[json_start..];
+                    let parsed: serde_json::Value = serde_json::from_str(json_str)
+                        .map_err(|e| format!("Failed to parse performance JSON: {}", e))?;
+
+                    return Ok(BenchmarkResult {
+                        total_duration: Duration::from_millis(
+                            parsed["total_duration_ms"].as_u64().unwrap_or(0),
+                        ),
+                        git_duration: Duration::from_millis(
+                            parsed["git_duration_ms"].as_u64().unwrap_or(0),
+                        ),
+                        pre_command_duration: Duration::from_millis(
+                            parsed["pre_command_duration_ms"].as_u64().unwrap_or(0),
+                        ),
+                        post_command_duration: Duration::from_millis(
+                            parsed["post_command_duration_ms"].as_u64().unwrap_or(0),
+                        ),
+                    });
+                }
+            }
+        }
+
+        Err("No performance data found in output".to_string())
     }
 
     pub fn git_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Result<String, String> {
@@ -173,7 +220,11 @@ impl TestRepo {
         self.commit(message)
     }
 
-    pub fn commit_with_env(&self, message: &str, envs: &[(&str, &str)]) -> Result<NewCommit, String> {
+    pub fn commit_with_env(
+        &self,
+        message: &str,
+        envs: &[(&str, &str)],
+    ) -> Result<NewCommit, String> {
         let output = self.git_with_env(&["commit", "-m", message], envs);
 
         // println!("commit output: {:?}", output);
