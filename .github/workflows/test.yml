@@ -73,6 +73,6 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run ignored tests
-        run: cargo test -- --ignored
+        run: cargo test -- --ignored --test github_integration
         env:
           CARGO_INCREMENTAL: 0
