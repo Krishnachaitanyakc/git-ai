@@ -1,10 +1,13 @@
-use crate::authorship::authorship_log_serialization::AuthorshipLog;
 use crate::authorship::post_commit;
 use crate::error::GitAiError;
 use crate::git::refs::get_reference_as_authorship_log_v3;
 use crate::git::repository::Repository;
 use crate::git::rewrite_log::RewriteLogEvent;
 use crate::utils::debug_log;
+use crate::{
+    authorship::authorship_log_serialization::AuthorshipLog,
+    git::authorship_traversal::load_all_ai_touched_files,
+};
 use std::collections::{HashMap, HashSet};
 
 // Process events in the rewrite log and call the correct rewrite functions in this file
@@ -231,6 +234,7 @@ pub fn rewrite_authorship_after_squash_or_rebase(
 
     // Step 3: Get list of changed files between the two branches
     let changed_files = repo.diff_changed_files(source_head_sha, &target_branch_head_sha)?;
+    let changed_files = filter_pathspecs_to_ai_touched_files(repo, &changed_files)?;
 
     if changed_files.is_empty() {
         // No files changed, nothing to do
@@ -537,6 +541,7 @@ pub fn rewrite_authorship_after_cherry_pick(
 
     // Step 1: Extract pathspecs from all source commits
     let pathspecs = get_pathspecs_from_commits(repo, source_commits)?;
+    let pathspecs = filter_pathspecs_to_ai_touched_files(repo, &pathspecs)?;
 
     if pathspecs.is_empty() {
         // No files were modified, nothing to do
@@ -865,6 +870,8 @@ pub fn reconstruct_working_log_after_reset(
         all_changed_files
     };
 
+    let pathspecs = filter_pathspecs_to_ai_touched_files(repo, &pathspecs)?;
+
     if pathspecs.is_empty() {
         debug_log("No files changed between commits, nothing to reconstruct");
         // Still delete old working log
@@ -1008,6 +1015,18 @@ fn get_pathspecs_from_commits(
     }
 
     Ok(pathspecs.into_iter().collect())
+}
+
+fn filter_pathspecs_to_ai_touched_files(
+    repo: &Repository,
+    pathspecs: &[String],
+) -> Result<Vec<String>, GitAiError> {
+    let touched_files = smol::block_on(load_all_ai_touched_files(repo))?;
+    Ok(pathspecs
+        .iter()
+        .filter(|p| touched_files.contains(p.as_str()))
+        .cloned()
+        .collect())
 }
 
 /// Transform VirtualAttributions to match a new final state (single-source variant)
