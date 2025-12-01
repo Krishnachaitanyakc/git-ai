@@ -185,7 +185,7 @@ fn test_prompt_hash_migration_ai_adds_lines_multiple_commits() {
     let repo = TestRepo::new();
     let mut file = repo.filename("test.ts");
 
-    file.set_contents(lines!["base_line"]);
+    file.set_contents(lines!["base_line", ""]);
 
     repo.stage_all_and_commit("Initial commit").unwrap();
 
@@ -228,7 +228,7 @@ fn test_prompt_hash_migration_ai_adds_then_commits_in_batches() {
     let repo = TestRepo::new();
     let mut file = repo.filename("test.ts");
 
-    file.set_contents(lines!["line1", "line2", "line3", "line4"]);
+    file.set_contents(lines!["line1", "line2", "line3", "line4", ""]);
 
     repo.stage_all_and_commit("Initial commit").unwrap();
 
@@ -278,7 +278,7 @@ fn test_prompt_hash_migration_unstaged_ai_lines_saved_to_working_log() {
     let repo = TestRepo::new();
     let mut file = repo.filename("test.ts");
 
-    file.set_contents(lines!["line1", "line2", "line3"]);
+    file.set_contents(lines!["line1", "line2", "line3", ""]);
 
     repo.stage_all_and_commit("Initial commit").unwrap();
 
