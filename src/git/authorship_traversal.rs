@@ -1,176 +1,214 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 
-use crate::{error::GitAiError, git::repository::Repository};
-use gix_object::Find;
+use crate::authorship::authorship_log_serialization::AuthorshipLog;
+use crate::error::GitAiError;
+use crate::git::repository::{Repository, exec_git, exec_git_stdin};
 
 /// Get a HashSet of all files that have AI attributions across all commits
 ///
 /// Efficiently loads all notes and extracts unique file paths without keeping
 /// full attestations in memory
 pub async fn load_all_ai_touched_files(repo: &Repository) -> Result<HashSet<String>, GitAiError> {
-    let git_dir = repo.path().to_path_buf();
+    let global_args = repo.global_args_for_exec();
 
-    // Open repo and collect blob entries (sync part)
-    let (repo_path, blob_entries) = smol::unblock(move || {
-        // Find the .git directory
+    // Run in blocking context since we're doing I/O
+    smol::unblock(move || load_all_ai_touched_files_sync(&global_args)).await
+}
 
-        // Open the object database
-        let mut odb = gix_odb::at(git_dir.join("objects"))
-            .map_err(|e| GitAiError::Generic(format!("Failed to open object database: {}", e)))?;
+fn load_all_ai_touched_files_sync(global_args: &[String]) -> Result<HashSet<String>, GitAiError> {
+    // Step 1: Get all blob entries from refs/notes/ai using ls-tree
+    let blob_shas = get_note_blob_shas(global_args)?;
 
-        // Open ref store
-        let ref_store =
-            gix_ref::file::Store::at(git_dir.clone(), gix_ref::store::init::Options::default());
+    if blob_shas.is_empty() {
+        return Ok(HashSet::new());
+    }
 
-        // Try to find refs/notes/ai
-        let notes_ref = match ref_store.find_loose("refs/notes/ai") {
-            Ok(r) => r,
-            _ => return Ok::<_, GitAiError>((git_dir.clone(), Vec::new())),
-        };
+    // Step 2: Use cat-file --batch to read all blobs efficiently
+    let blob_contents = batch_read_blobs(global_args, &blob_shas)?;
 
-        // Get the target OID from the reference
-        let target_oid = match notes_ref.target {
-            gix_ref::Target::Object(oid) => oid,
-            _ => return Ok::<_, GitAiError>((git_dir.clone(), Vec::new())),
-        };
-
-        // Read the commit object and get its tree
-        let mut buffer = Vec::new();
-        let commit_data = odb
-            .try_find(target_oid.as_ref(), &mut buffer)
-            .map_err(|e| GitAiError::Generic(format!("Failed to find notes object: {}", e)))?
-            .ok_or_else(|| GitAiError::Generic("Notes commit object not found".to_string()))?;
-
-        let commit = gix_object::CommitRef::from_bytes(&commit_data.data)
-            .map_err(|e| GitAiError::Generic(format!("Failed to parse commit: {}", e)))?;
-
-        let tree_oid = commit.tree();
-
-        let mut blob_entries: Vec<(String, gix_hash::ObjectId)> = Vec::new();
-        collect_blob_entries(&mut odb, tree_oid, String::new(), &mut blob_entries)?;
-
-        Ok((git_dir, blob_entries))
-    })
-    .await?;
-
-    // Process blobs in parallel across multiple workers
-    let max_concurrent = 64;
-
-    // Split work evenly across workers
-    let blobs_per_worker = (blob_entries.len() + max_concurrent - 1) / max_concurrent;
-    let worker_chunks: Vec<_> = blob_entries
-        .chunks(blobs_per_worker)
-        .map(|c| c.to_vec())
-        .collect();
-
-    // Spawn workers to process their chunks
-    let tasks: Vec<_> = worker_chunks
-        .into_iter()
-        .map(|chunk| {
-            let repo_path = repo_path.clone();
-            smol::spawn(async move {
-                smol::unblock(move || extract_file_paths_from_batch(repo_path, chunk))
-                    .await
-                    .unwrap_or_else(|_| HashSet::new())
-            })
-        })
-        .collect();
-
-    // Collect results from all workers into a single HashSet
+    // Step 3: Extract file paths from all blob contents
     let mut all_files = HashSet::new();
-    for task in tasks {
-        let batch_files = task.await;
-        all_files.extend(batch_files);
+    for content in blob_contents {
+        extract_file_paths_from_note(&content, &mut all_files);
     }
 
     Ok(all_files)
 }
 
-/// Extract unique file paths from a batch of blobs
-fn extract_file_paths_from_batch(
-    repo_path: PathBuf,
-    blob_entries: Vec<(String, gix_hash::ObjectId)>,
-) -> Result<HashSet<String>, GitAiError> {
-    use crate::authorship::authorship_log_serialization::AuthorshipLog;
+/// Get all blob SHAs from refs/notes/ai tree
+fn get_note_blob_shas(global_args: &[String]) -> Result<Vec<String>, GitAiError> {
+    let mut args = global_args.to_vec();
+    args.push("ls-tree".to_string());
+    args.push("-r".to_string());
+    args.push("refs/notes/ai".to_string());
 
-    // Find the .git directory
-    let git_dir = if repo_path.join(".git").exists() {
-        repo_path.join(".git")
-    } else {
-        repo_path.clone()
+    let output = match exec_git(&args) {
+        Ok(output) => output,
+        Err(GitAiError::GitCliError {
+            code: Some(128), ..
+        }) => {
+            // refs/notes/ai doesn't exist - no notes yet
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e),
     };
 
-    let odb = gix_odb::at(git_dir.join("objects"))
-        .map_err(|e| GitAiError::Generic(format!("Failed to open object database: {}", e)))?;
+    let stdout = String::from_utf8(output.stdout)?;
 
-    let mut files = HashSet::new();
-    let mut buffer = Vec::new();
-
-    for (_commit_sha, blob_id) in blob_entries {
-        buffer.clear();
-        let blob_data = match odb.try_find(blob_id.as_ref(), &mut buffer) {
-            Ok(Some(obj)) => obj,
-            _ => continue,
-        };
-
-        let content = match std::str::from_utf8(&blob_data.data) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        // Find the divider and slice before it, then add minimal metadata to make it parseable
-        if let Some(divider_pos) = content.find("\n---\n") {
-            let attestation_section = &content[..divider_pos];
-            // Create a complete parseable format with empty metadata
-            let parseable = format!(
-                "{}\n---\n{{\"schema_version\":\"authorship/3.0.0\",\"base_commit_sha\":\"\",\"prompts\":{{}}}}",
-                attestation_section
-            );
-
-            if let Ok(log) = AuthorshipLog::deserialize_from_string(&parseable) {
-                for attestation in log.attestations {
-                    files.insert(attestation.file_path);
-                }
-            }
+    // Parse ls-tree output: "<mode> <type> <object>\t<path>"
+    let mut blob_shas = Vec::new();
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        // Split on whitespace to get mode, type, object
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            // parts[2] is the object SHA (blob)
+            // The path comes after a tab, but we don't need it
+            let sha = parts[2].split('\t').next().unwrap_or(parts[2]);
+            blob_shas.push(sha.to_string());
         }
     }
 
-    Ok(files)
+    Ok(blob_shas)
 }
 
-/// Collect all blob entries from the notes tree (recursive)
-fn collect_blob_entries(
-    odb: &mut gix_odb::Handle,
-    tree_oid: gix_hash::ObjectId,
-    prefix: String,
-    entries: &mut Vec<(String, gix_hash::ObjectId)>,
-) -> Result<(), GitAiError> {
-    // Read the tree object
-    let mut buffer = Vec::new();
-    let tree_data = odb
-        .try_find(tree_oid.as_ref(), &mut buffer)
-        .map_err(|e| GitAiError::Generic(format!("Failed to find tree: {}", e)))?
-        .ok_or_else(|| GitAiError::Generic("Tree object not found".to_string()))?;
-
-    let tree = gix_object::TreeRef::from_bytes(&tree_data.data)
-        .map_err(|e| GitAiError::Generic(format!("Failed to parse tree: {}", e)))?;
-
-    for entry in tree.entries {
-        let entry_name = std::str::from_utf8(entry.filename)
-            .map_err(|e| GitAiError::Generic(format!("Invalid UTF-8 in tree entry: {}", e)))?;
-        let full_sha = format!("{}{}", prefix, entry_name);
-
-        match entry.mode.kind() {
-            gix_object::tree::EntryKind::Blob => {
-                entries.push((full_sha, entry.oid.to_owned()));
-            }
-            gix_object::tree::EntryKind::Tree => {
-                collect_blob_entries(odb, entry.oid.to_owned(), full_sha, entries)?;
-            }
-            _ => {}
-        }
+/// Read multiple blobs efficiently using cat-file --batch
+fn batch_read_blobs(
+    global_args: &[String],
+    blob_shas: &[String],
+) -> Result<Vec<String>, GitAiError> {
+    if blob_shas.is_empty() {
+        return Ok(Vec::new());
     }
 
-    Ok(())
+    let mut args = global_args.to_vec();
+    args.push("cat-file".to_string());
+    args.push("--batch".to_string());
+
+    // Prepare stdin: one SHA per line
+    let stdin_data = blob_shas.join("\n") + "\n";
+
+    let output = exec_git_stdin(&args, stdin_data.as_bytes())?;
+
+    // Parse batch output
+    // Format for each object:
+    // <sha> <type> <size>\n
+    // <content>\n
+    parse_cat_file_batch_output(&output.stdout)
+}
+
+/// Parse the output of git cat-file --batch
+///
+/// Format:
+/// <sha> <type> <size>\n
+/// <content bytes>\n
+/// (repeat for each object)
+fn parse_cat_file_batch_output(data: &[u8]) -> Result<Vec<String>, GitAiError> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+
+    while pos < data.len() {
+        // Find the header line ending with \n
+        let header_end = match data[pos..].iter().position(|&b| b == b'\n') {
+            Some(idx) => pos + idx,
+            None => break,
+        };
+
+        let header = std::str::from_utf8(&data[pos..header_end])
+            .map_err(|e| GitAiError::Generic(format!("Invalid UTF-8 in header: {}", e)))?;
+
+        // Parse header: "<sha> <type> <size>" or "<sha> missing"
+        let parts: Vec<&str> = header.split_whitespace().collect();
+        if parts.len() < 2 {
+            pos = header_end + 1;
+            continue;
+        }
+
+        if parts[1] == "missing" {
+            // Object doesn't exist, skip
+            pos = header_end + 1;
+            continue;
+        }
+
+        if parts.len() < 3 {
+            pos = header_end + 1;
+            continue;
+        }
+
+        let size: usize = parts[2]
+            .parse()
+            .map_err(|e| GitAiError::Generic(format!("Invalid size in cat-file output: {}", e)))?;
+
+        // Content starts after the header newline
+        let content_start = header_end + 1;
+        let content_end = content_start + size;
+
+        if content_end > data.len() {
+            break;
+        }
+
+        // Try to parse content as UTF-8
+        if let Ok(content) = std::str::from_utf8(&data[content_start..content_end]) {
+            results.push(content.to_string());
+        }
+
+        // Move past content and the trailing newline
+        pos = content_end + 1;
+    }
+
+    Ok(results)
+}
+
+/// Extract file paths from a note blob content
+fn extract_file_paths_from_note(content: &str, files: &mut HashSet<String>) {
+    // Find the divider and slice before it, then add minimal metadata to make it parseable
+    if let Some(divider_pos) = content.find("\n---\n") {
+        let attestation_section = &content[..divider_pos];
+        // Create a complete parseable format with empty metadata
+        let parseable = format!(
+            "{}\n---\n{{\"schema_version\":\"authorship/3.0.0\",\"base_commit_sha\":\"\",\"prompts\":{{}}}}",
+            attestation_section
+        );
+
+        if let Ok(log) = AuthorshipLog::deserialize_from_string(&parseable) {
+            for attestation in log.attestations {
+                files.insert(attestation.file_path);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{find_repository_in_path, sync_authorship::fetch_authorship_notes};
+    use std::time::Instant;
+
+    #[test]
+    fn test_load_ai_touched_files() {
+        smol::block_on(async {
+            let repo = find_repository_in_path(".").unwrap();
+
+            fetch_authorship_notes(&repo, "origin").unwrap();
+
+            let start = Instant::now();
+            let files = load_all_ai_touched_files(&repo).await.unwrap();
+            let elapsed = start.elapsed();
+
+            println!(
+                "Found {} unique AI-touched files in {:?}",
+                files.len(),
+                elapsed
+            );
+
+            // Show first 10 files
+            let mut sorted_files: Vec<_> = files.iter().collect();
+            sorted_files.sort();
+            for file in sorted_files.iter().take(10) {
+                println!("  {}", file);
+            }
+        });
+    }
 }
