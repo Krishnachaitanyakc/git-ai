@@ -188,7 +188,8 @@ fn test_cursor_preset_extracts_edited_filepath() {
         "conversation_id": "test-conversation-id",
         "workspace_roots": ["/Users/test/workspace"],
         "hook_event_name": "afterFileEdit",
-        "file_path": "/Users/test/workspace/src/main.rs"
+        "file_path": "/Users/test/workspace/src/main.rs",
+        "model": "model-name-from-hook-test"
     }"##;
 
     let flags = AgentCheckpointFlags {
@@ -214,7 +215,8 @@ fn test_cursor_preset_no_filepath_when_missing() {
     let hook_input = r##"{
         "conversation_id": "test-conversation-id",
         "workspace_roots": ["/Users/test/workspace"],
-        "hook_event_name": "afterFileEdit"
+        "hook_event_name": "afterFileEdit",
+        "model": "model-name-from-hook-test"
     }"##;
 
     let flags = AgentCheckpointFlags {
@@ -240,7 +242,8 @@ fn test_cursor_preset_human_checkpoint_no_filepath() {
         "conversation_id": "test-conversation-id",
         "workspace_roots": ["/Users/test/workspace"],
         "hook_event_name": "beforeSubmitPrompt",
-        "file_path": "/Users/test/workspace/src/main.rs"
+        "file_path": "/Users/test/workspace/src/main.rs",
+        "model": "model-name-from-hook-test"
     }"##;
 
     let flags = AgentCheckpointFlags {
@@ -286,11 +289,13 @@ fn test_cursor_e2e_with_attribution() {
 
     // Run checkpoint with the cursor database environment variable
     // Use serde_json to properly escape paths (especially important on Windows)
+    // Note: Using a test model name to verify it comes from hook input, not DB (DB has "gpt-5")
     let hook_input = serde_json::json!({
         "conversation_id": TEST_CONVERSATION_ID,
         "workspace_roots": [repo.canonical_path().to_string_lossy().to_string()],
         "hook_event_name": "afterFileEdit",
-        "file_path": file_path.to_string_lossy().to_string()
+        "file_path": file_path.to_string_lossy().to_string(),
+        "model": "model-name-from-hook-test"
     })
     .to_string();
 
@@ -350,10 +355,10 @@ fn test_cursor_e2e_with_attribution() {
         "Should have exactly 31 messages from the test conversation"
     );
 
-    // Verify the model was extracted
+    // Verify the model was extracted from hook input (not from the database which has "gpt-5")
     assert_eq!(
-        prompt_record.agent_id.model, "gpt-5",
-        "Model should be 'gpt-5' from test database"
+        prompt_record.agent_id.model, "model-name-from-hook-test",
+        "Model should be 'model-name-from-hook-test' from hook input (not 'gpt-5' from database)"
     );
 }
 
@@ -435,11 +440,13 @@ fn test_cursor_e2e_with_resync() {
     fs::write(&file_path, edited_content).unwrap();
 
     // Run checkpoint with the ORIGINAL database (not yet modified)
+    // Note: Using a test model name to verify it comes from hook input, not DB (DB has "gpt-5")
     let hook_input = serde_json::json!({
         "conversation_id": TEST_CONVERSATION_ID,
         "workspace_roots": [repo.canonical_path().to_string_lossy().to_string()],
         "hook_event_name": "afterFileEdit",
-        "file_path": file_path.to_string_lossy().to_string()
+        "file_path": file_path.to_string_lossy().to_string(),
+        "model": "model-name-from-hook-test"
     })
     .to_string();
 

@@ -163,6 +163,13 @@ impl AgentCheckpointPreset for CursorPreset {
             })?
             .to_string();
 
+        // Extract model from hook input (Cursor provides this directly)
+        let model = hook_data
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
         // Validate hook_event_name
         if hook_event_name != "beforeSubmitPrompt" && hook_event_name != "afterFileEdit" {
             return Err(GitAiError::PresetError(format!(
@@ -181,7 +188,7 @@ impl AgentCheckpointPreset for CursorPreset {
                 agent_id: AgentId {
                     tool: "cursor".to_string(),
                     id: conversation_id.clone(),
-                    model: "unknown".to_string(),
+                    model: model.clone(),
                 },
                 agent_metadata: None,
                 checkpoint_kind: CheckpointKind::Human,
@@ -205,14 +212,14 @@ impl AgentCheckpointPreset for CursorPreset {
             )));
         }
 
-        // Fetch the composer data and extract transcript + model + edited filepaths
-        let (transcript, model) = match Self::fetch_composer_payload(&global_db, &conversation_id)
-        {
+        // Fetch the composer data and extract transcript (model is now from hook input, not DB)
+        let transcript = match Self::fetch_composer_payload(&global_db, &conversation_id) {
             Ok(payload) => Self::transcript_data_from_composer_payload(
                 &payload,
                 &global_db,
                 &conversation_id,
             )?
+            .map(|(transcript, _db_model)| transcript)
             .unwrap_or_else(|| {
                 // Return empty transcript as default
                 // There's a race condition causing new threads to sometimes not show up.
@@ -220,7 +227,7 @@ impl AgentCheckpointPreset for CursorPreset {
                 eprintln!(
                     "[Warning] Could not extract transcript from Cursor composer. Retrying at commit."
                 );
-                (AiTranscript::new(), "unknown".to_string())
+                AiTranscript::new()
             }),
             Err(GitAiError::PresetError(msg))
                 if msg == "No conversation data found in database" =>
@@ -229,7 +236,7 @@ impl AgentCheckpointPreset for CursorPreset {
                 eprintln!(
                     "[Warning] No conversation data found in Cursor DB for this thread. Proceeding and will re-sync at commit."
                 );
-                (AiTranscript::new(), "unknown".to_string())
+                AiTranscript::new()
             }
             Err(e) => return Err(e),
         };
