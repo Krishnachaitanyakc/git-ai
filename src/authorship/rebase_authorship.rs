@@ -1036,7 +1036,7 @@ fn get_pathspecs_from_commits(
     Ok(pathspecs.into_iter().collect())
 }
 
-fn filter_pathspecs_to_ai_touched_files(
+pub fn filter_pathspecs_to_ai_touched_files(
     repo: &Repository,
     commit_shas: &[String],
     pathspecs: &[String],

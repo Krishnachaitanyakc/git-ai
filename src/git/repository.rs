@@ -1799,6 +1799,16 @@ pub fn find_repository(global_args: &Vec<String>) -> Result<Repository, GitAiErr
         )));
     }
 
+    // Rewrite global_args if -C path doesn't match the actual workdir/
+    // So every git command can assume it's being run in repo root
+    let mut global_args = global_args.clone();
+    if global_args.len() == 2 && global_args[0] == "-C" {
+        let workdir_str = workdir.display().to_string();
+        if global_args[1] != workdir_str {
+            global_args[1] = workdir_str;
+        }
+    }
+
     // Canonicalize workdir for reliable path comparisons (especially on Windows)
     // On Windows, canonical paths use the \\?\ UNC prefix, which makes path.starts_with()
     // comparisons work correctly. We store both regular and canonical versions.
