@@ -410,6 +410,209 @@ impl GeminiPreset {
     }
 }
 
+pub struct ContinueCliPreset;
+
+impl AgentCheckpointPreset for ContinueCliPreset {
+    fn run(&self, flags: AgentCheckpointFlags) -> Result<AgentRunResult, GitAiError> {
+        // Parse hook_input as JSON
+        let stdin_json = flags.hook_input.ok_or_else(|| {
+            GitAiError::PresetError("hook_input is required for Continue CLI preset".to_string())
+        })?;
+
+        let hook_data: serde_json::Value = serde_json::from_str(&stdin_json)
+            .map_err(|e| GitAiError::PresetError(format!("Invalid JSON in hook_input: {}", e)))?;
+
+        let session_id = hook_data
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GitAiError::PresetError("session_id not found in hook_input".to_string()))?;
+
+        let transcript_path = hook_data
+            .get("transcript_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GitAiError::PresetError("transcript_path not found in hook_input".to_string()))?;
+
+        let _cwd = hook_data
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| GitAiError::PresetError("cwd not found in hook_input".to_string()))?;
+
+        // Extract model from hook_input (required)
+        let model = hook_data
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                eprintln!("[Warning] Continue CLI: 'model' field not found in hook_input, defaulting to 'unknown'");
+                eprintln!("[Debug] hook_data keys: {:?}", hook_data.as_object().map(|obj| obj.keys().collect::<Vec<_>>()));
+                "unknown".to_string()
+            });
+
+        eprintln!("[Debug] Continue CLI using model: {}", model);
+
+        // Parse transcript from JSON file
+        let transcript = match ContinueCliPreset::transcript_from_continue_json(&transcript_path) {
+            Ok(transcript) => transcript,
+            Err(e) => {
+                eprintln!("[Warning] Failed to parse Continue CLI JSON: {e}");
+                // TODO Log error to sentry
+                crate::authorship::transcript::AiTranscript::new()
+            }
+        };
+
+        // The session_id is the unique identifier for this conversation
+        let agent_id = AgentId {
+            tool: "continue-cli".to_string(),
+            id: session_id.to_string(),
+            model,
+        };
+
+        // Extract file_path from tool_input if present
+        let file_path_as_vec = hook_data
+            .get("tool_input")
+            .and_then(|ti| ti.get("file_path"))
+            .and_then(|v| v.as_str())
+            .map(|path| vec![path.to_string()]);
+
+        // Store transcript_path in metadata
+        let agent_metadata = HashMap::from([
+            ("transcript_path".to_string(), transcript_path.to_string()),
+        ]);
+
+        // Check if this is a PreToolUse event (human checkpoint)
+        let hook_event_name = hook_data.get("hook_event_name").and_then(|v| v.as_str());
+
+        if hook_event_name == Some("PreToolUse") {
+            // Early return for human checkpoint
+            return Ok(AgentRunResult {
+                agent_id,
+                agent_metadata: None,
+                checkpoint_kind: CheckpointKind::Human,
+                transcript: None,
+                repo_working_dir: None,
+                edited_filepaths: None,
+                will_edit_filepaths: file_path_as_vec,
+                dirty_files: None,
+            });
+        }
+
+        Ok(AgentRunResult {
+            agent_id,
+            agent_metadata: Some(agent_metadata),
+            checkpoint_kind: CheckpointKind::AiAgent,
+            transcript: Some(transcript),
+            // use default.
+            repo_working_dir: None,
+            edited_filepaths: file_path_as_vec,
+            will_edit_filepaths: None,
+            dirty_files: None,
+        })
+    }
+}
+
+impl ContinueCliPreset {
+    /// Parse a Continue CLI JSON file into a transcript
+    pub fn transcript_from_continue_json(
+        transcript_path: &str,
+    ) -> Result<AiTranscript, GitAiError> {
+        let json_content = std::fs::read_to_string(transcript_path).map_err(|e| GitAiError::IoError(e))?;
+        let conversation: serde_json::Value = serde_json::from_str(&json_content)
+            .map_err(|e| GitAiError::JsonError(e))?;
+
+        let history = conversation
+            .get("history")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                GitAiError::PresetError("history array not found in Continue CLI JSON".to_string())
+            })?;
+
+        let mut transcript = AiTranscript::new();
+
+        for history_item in history {
+            // Extract the message from the history item
+            let message = match history_item.get("message") {
+                Some(m) => m,
+                None => continue, // Skip items without a message
+            };
+
+            let role = match message.get("role").and_then(|v| v.as_str()) {
+                Some(r) => r,
+                None => continue, // Skip messages without a role
+            };
+
+            // Extract timestamp from message if available
+            let timestamp = message
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            match role {
+                "user" => {
+                    // Handle user messages - content is a string
+                    if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
+                        let trimmed = content.trim();
+                        if !trimmed.is_empty() {
+                            transcript.add_message(Message::User {
+                                text: trimmed.to_string(),
+                                timestamp: timestamp.clone(),
+                            });
+                        }
+                    }
+                }
+                "assistant" => {
+                    // Handle assistant text content
+                    if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
+                        let trimmed = content.trim();
+                        if !trimmed.is_empty() {
+                            transcript.add_message(Message::Assistant {
+                                text: trimmed.to_string(),
+                                timestamp: timestamp.clone(),
+                            });
+                        }
+                    }
+
+                    // Handle tool calls from the message
+                    if let Some(tool_calls) = message.get("toolCalls").and_then(|v| v.as_array()) {
+                        for tool_call in tool_calls {
+                            if let Some(function) = tool_call.get("function") {
+                                let tool_name = function
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+
+                                // Parse the arguments JSON string
+                                let args = if let Some(args_str) = function.get("arguments").and_then(|v| v.as_str()) {
+                                    serde_json::from_str::<serde_json::Value>(args_str)
+                                        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
+                                } else {
+                                    serde_json::Value::Object(serde_json::Map::new())
+                                };
+
+                                let tool_timestamp = tool_call
+                                    .get("timestamp")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+
+                                transcript.add_message(Message::ToolUse {
+                                    name: tool_name.to_string(),
+                                    input: args,
+                                    timestamp: tool_timestamp,
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Skip unknown roles
+                    continue;
+                }
+            }
+        }
+
+        Ok(transcript)
+    }
+}
+
 // Cursor to checkpoint preset
 pub struct CursorPreset;
 
