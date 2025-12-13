@@ -1,7 +1,5 @@
-use crate::authorship::authorship_log::PromptRecord;
-use crate::authorship::authorship_log_serialization::AuthorshipLog;
+use crate::commands::blame::GitAiBlameOptions;
 use crate::error::GitAiError;
-use crate::git::refs::get_reference_as_authorship_log_v3;
 use crate::git::repository::{Repository, exec_git};
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -301,86 +299,111 @@ pub fn overlay_diff_attributions(
 ) -> Result<HashMap<DiffLineKey, Attribution>, GitAiError> {
     let mut attributions = HashMap::new();
 
-    // Cache authorship logs per commit
-    let mut old_log_cache: Option<AuthorshipLog> = None;
-    let mut new_log_cache: Option<AuthorshipLog> = None;
-    let mut foreign_prompts_cache: HashMap<String, Option<PromptRecord>> = HashMap::new();
-
-    // Track which commits we've tried to load
-    let mut old_log_loaded = false;
-    let mut new_log_loaded = false;
-
+    // Group added lines by file
+    let mut lines_by_file: HashMap<String, Vec<u32>> = HashMap::new();
     for hunk in hunks {
-        let file = &hunk.file_path;
+        if !hunk.added_lines.is_empty() {
+            lines_by_file
+                .entry(hunk.file_path.clone())
+                .or_insert_with(Vec::new)
+                .extend(&hunk.added_lines);
+        }
+    }
 
-        // Load authorship log for old commit if needed (for deleted lines)
-        if !hunk.deleted_lines.is_empty() && !old_log_loaded {
-            old_log_cache = get_reference_as_authorship_log_v3(repo, from_commit).ok();
-            old_log_loaded = true;
+    // For each file, call blame with the appropriate line ranges
+    for (file_path, mut lines) in lines_by_file {
+        // Sort and convert to contiguous ranges for efficient -L format
+        lines.sort_unstable();
+        lines.dedup();
+        let line_ranges = lines_to_ranges(&lines);
+
+        if line_ranges.is_empty() {
+            continue;
         }
 
-        // Load authorship log for new commit if needed (for added lines)
-        if !hunk.added_lines.is_empty() && !new_log_loaded {
-            new_log_cache = get_reference_as_authorship_log_v3(repo, to_commit).ok();
-            new_log_loaded = true;
-        }
+        // Build blame options
+        let mut options = GitAiBlameOptions::default();
+        options.oldest_commit = Some(from_commit.to_string());
+        options.newest_commit = Some(to_commit.to_string());
+        options.line_ranges = line_ranges;
+        options.no_output = true;
 
-        // Process deleted lines
-        for &line_num in &hunk.deleted_lines {
-            let attribution = if let Some(ref log) = old_log_cache {
-                get_line_attribution(repo, log, file, line_num, &mut foreign_prompts_cache)
-            } else {
-                Attribution::NoData
-            };
+        // Call blame to get attributions
+        let blame_result = repo.blame(&file_path, &options);
 
-            let key = DiffLineKey {
-                file: file.clone(),
-                line: line_num,
-                side: LineSide::Old,
-            };
-            attributions.insert(key, attribution);
-        }
+        match blame_result {
+            Ok((line_authors, prompt_records)) => {
+                // Map blame results to Attribution enum
+                for line in &lines {
+                    if let Some(author) = line_authors.get(line) {
+                        // Check if this author is an AI tool by looking up in prompt_records
+                        let attribution = if prompt_records.values().any(|pr| &pr.agent_id.tool == author) {
+                            Attribution::Ai(author.clone())
+                        } else {
+                            Attribution::Human(author.clone())
+                        };
 
-        // Process added lines
-        for &line_num in &hunk.added_lines {
-            let attribution = if let Some(ref log) = new_log_cache {
-                get_line_attribution(repo, log, file, line_num, &mut foreign_prompts_cache)
-            } else {
-                Attribution::NoData
-            };
-
-            let key = DiffLineKey {
-                file: file.clone(),
-                line: line_num,
-                side: LineSide::New,
-            };
-            attributions.insert(key, attribution);
+                        let key = DiffLineKey {
+                            file: file_path.clone(),
+                            line: *line,
+                            side: LineSide::New,
+                        };
+                        attributions.insert(key, attribution);
+                    } else {
+                        // No blame data for this line
+                        let key = DiffLineKey {
+                            file: file_path.clone(),
+                            line: *line,
+                            side: LineSide::New,
+                        };
+                        attributions.insert(key, Attribution::NoData);
+                    }
+                }
+            }
+            Err(_) => {
+                // Blame failed, mark all lines as NoData
+                for line in &lines {
+                    let key = DiffLineKey {
+                        file: file_path.clone(),
+                        line: *line,
+                        side: LineSide::New,
+                    };
+                    attributions.insert(key, Attribution::NoData);
+                }
+            }
         }
     }
 
     Ok(attributions)
 }
 
-fn get_line_attribution(
-    repo: &Repository,
-    log: &AuthorshipLog,
-    file: &str,
-    line: u32,
-    foreign_prompts_cache: &mut HashMap<String, Option<PromptRecord>>,
-) -> Attribution {
-    if let Some((author, _prompt_hash, prompt)) =
-        log.get_line_attribution(repo, file, line, foreign_prompts_cache)
-    {
-        if let Some(pr) = prompt {
-            // AI authorship
-            Attribution::Ai(pr.agent_id.tool.clone())
-        } else {
-            // Human authorship
-            Attribution::Human(author.username.clone())
-        }
-    } else {
-        Attribution::NoData
+/// Convert a sorted list of line numbers to contiguous ranges
+/// e.g., [1, 2, 3, 5, 6, 10] -> [(1, 3), (5, 6), (10, 10)]
+fn lines_to_ranges(lines: &[u32]) -> Vec<(u32, u32)> {
+    if lines.is_empty() {
+        return Vec::new();
     }
+
+    let mut ranges = Vec::new();
+    let mut start = lines[0];
+    let mut end = lines[0];
+
+    for &line in &lines[1..] {
+        if line == end + 1 {
+            // Contiguous, extend the range
+            end = line;
+        } else {
+            // Gap found, save current range and start new one
+            ranges.push((start, end));
+            start = line;
+            end = line;
+        }
+    }
+
+    // Don't forget the last range
+    ranges.push((start, end));
+
+    ranges
 }
 
 // ============================================================================
