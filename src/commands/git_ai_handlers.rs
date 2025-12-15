@@ -95,6 +95,10 @@ pub fn handle_git_ai(args: &[String]) {
         "show-prompt" => {
             commands::show_prompt::handle_show_prompt(&args[1..]);
         }
+        #[cfg(debug_assertions)]
+        "show-transcript" => {
+            handle_show_transcript(&args[1..]);
+        }
         _ => {
             println!("Unknown git-ai command: {}", args[0]);
             std::process::exit(1);
@@ -647,5 +651,102 @@ fn get_all_files_for_mock_ai(working_dir: &str) -> Vec<String> {
     match repo.get_staged_and_unstaged_filenames() {
         Ok(filenames) => filenames.into_iter().collect(),
         Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(debug_assertions)]
+fn handle_show_transcript(args: &[String]) {
+    if args.len() < 2 {
+        eprintln!("Error: show-transcript requires agent name and path/id");
+        eprintln!("Usage: git-ai show-transcript <agent> <path|id>");
+        eprintln!("  Agents: claude, gemini, continue-cli, github-copilot, cursor");
+        eprintln!("  For cursor, provide conversation_id instead of path");
+        std::process::exit(1);
+    }
+
+    let agent_name = &args[0];
+    let path_or_id = &args[1];
+
+    let result: Result<(crate::authorship::transcript::AiTranscript, Option<String>), crate::error::GitAiError> = match agent_name.as_str() {
+        "claude" => {
+            match ClaudePreset::transcript_and_model_from_claude_code_jsonl(path_or_id) {
+                Ok((transcript, model)) => Ok((transcript, model)),
+                Err(e) => {
+                    eprintln!("Error loading Claude transcript: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "gemini" => {
+            match GeminiPreset::transcript_and_model_from_gemini_json(path_or_id) {
+                Ok((transcript, model)) => Ok((transcript, model)),
+                Err(e) => {
+                    eprintln!("Error loading Gemini transcript: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "continue-cli" => {
+            match ContinueCliPreset::transcript_from_continue_json(path_or_id) {
+                Ok(transcript) => Ok((transcript, None)),
+                Err(e) => {
+                    eprintln!("Error loading Continue CLI transcript: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "github-copilot" => {
+            match GithubCopilotPreset::transcript_and_model_from_copilot_session_json(path_or_id) {
+                Ok((transcript, model, _file_paths)) => Ok((transcript, model)),
+                Err(e) => {
+                    eprintln!("Error loading GitHub Copilot transcript: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "cursor" => {
+            match CursorPreset::fetch_latest_cursor_conversation(path_or_id) {
+                Ok(Some((transcript, model))) => Ok((transcript, Some(model))),
+                Ok(None) => {
+                    eprintln!("Error: Conversation not found or database not available");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error loading Cursor transcript: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("Error: Unknown agent '{}'", agent_name);
+            eprintln!("Supported agents: claude, gemini, continue-cli, github-copilot, cursor");
+            std::process::exit(1);
+        }
+    };
+
+    match result {
+        Ok((transcript, model)) => {
+            // Serialize transcript to JSON
+            let transcript_json = match serde_json::to_string_pretty(&transcript) {
+                Ok(json) => json,
+                Err(e) => {
+                    eprintln!("Error serializing transcript: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            // Print model and transcript
+            if let Some(model_name) = model {
+                println!("Model: {}", model_name);
+            } else {
+                println!("Model: (not available)");
+            }
+            println!("\nTranscript:");
+            println!("{}", transcript_json);
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
     }
 }
