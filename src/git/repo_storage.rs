@@ -109,6 +109,22 @@ impl RepoStorage {
         Ok(())
     }
 
+    /// Rename a working log directory from one commit SHA to another.
+    /// Used when fast-forward pull changes HEAD but preserves working directory state.
+    /// Only renames if old directory exists and new directory doesn't exist.
+    pub fn rename_working_log(&self, old_sha: &str, new_sha: &str) -> Result<(), GitAiError> {
+        let old_dir = self.working_logs.join(old_sha);
+        let new_dir = self.working_logs.join(new_sha);
+        if old_dir.exists() && !new_dir.exists() {
+            fs::rename(&old_dir, &new_dir)?;
+            debug_log(&format!(
+                "Renamed working log from {} to {}",
+                old_sha, new_sha
+            ));
+        }
+        Ok(())
+    }
+
     /* Rewrite Log Persistance */
 
     /// Append a rewrite event to the rewrite log file and return the full log
