@@ -528,16 +528,9 @@ export class BlameLensManager {
   /**
    * Update status bar based on the current cursor position.
    * Shows model name if the current line is AI-authored, otherwise shows human icon.
-   * Shows highlighted background when AI toggle is enabled.
+   * Text color matches the gutter highlight color for the current prompt.
    */
   private async updateStatusBar(editor: vscode.TextEditor | undefined): Promise<void> {
-    // Set background color based on toggle state
-    if (this.toggleAICodeEnabled) {
-      this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-    } else {
-      this.statusBarItem.backgroundColor = undefined;
-    }
-
     if (!editor) {
       this.statusBarItem.text = '🧑‍💻';
       this.statusBarItem.tooltip = 'Human-authored code (click to toggle AI highlighting)';
@@ -572,9 +565,8 @@ export class BlameLensManager {
         });
       }
       
-      // Show human icon while loading
-      this.statusBarItem.text = '🧑‍💻';
-      this.statusBarItem.tooltip = 'Loading... (click to toggle AI highlighting)';
+      // Hide status bar while loading
+      this.statusBarItem.hide();
       return;
     }
 
@@ -584,6 +576,11 @@ export class BlameLensManager {
       const model = lineInfo.promptRecord?.agent_id?.model;
       const tool = lineInfo.promptRecord?.agent_id?.tool || lineInfo.author;
       const modelName = this.extractModelName(model);
+      
+      // Set status bar color to match gutter highlight
+      const colorIndex = this.getColorIndexForPromptId(lineInfo.commitHash);
+      const gutterColorHex = this.rgbaToHex(this.HUNK_COLORS[colorIndex]);
+      this.statusBarItem.color = gutterColorHex;
       
       // Always show robot emoji for AI code
       // Show model name if available, otherwise show tool name
@@ -608,12 +605,16 @@ export class BlameLensManager {
       // Show human icon for human-authored code
       this.statusBarItem.text = '🧑‍💻';
       this.statusBarItem.tooltip = 'Human-authored code (click to toggle AI highlighting)';
+      this.statusBarItem.color = undefined; // Reset color for human code
       
       // Clear decorations if not on AI line (unless toggle is on)
       if (!this.toggleAICodeEnabled) {
         this.clearColoredBorders(editor);
       }
     }
+    
+    // Make sure the status bar is visible (may have been hidden during loading)
+    this.statusBarItem.show();
   }
 
   /**
@@ -653,6 +654,21 @@ export class BlameLensManager {
       hash = hash & hash; // Convert to 32-bit integer
     }
     return Math.abs(hash) % 40;
+  }
+
+  /**
+   * Convert rgba color string to hex format for markdown compatibility.
+   * Input: 'rgba(96, 165, 250, 0.8)' -> Output: '#60a5fa'
+   */
+  private rgbaToHex(rgba: string): string {
+    const match = rgba.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!match) {
+      return '#a78bfa'; // Fallback purple
+    }
+    const r = parseInt(match[1], 10);
+    const g = parseInt(match[2], 10);
+    const b = parseInt(match[3], 10);
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
   }
 
   /**
@@ -750,6 +766,13 @@ export class BlameLensManager {
     const modelLower = model.toLowerCase();
     const hideModel = !model || modelLower === 'default' || modelLower === 'auto' || modelLower === 'unknown';
     const modelDisplay = hideModel ? '' : model;
+
+    // ═══════════════════════════════════════════════════════════════
+    // COLOR BAR - Visual association with gutter highlight
+    // ═══════════════════════════════════════════════════════════════
+    const colorIndex = this.getColorIndexForPromptId(lineInfo.commitHash);
+    const gutterColorHex = this.rgbaToHex(this.HUNK_COLORS[colorIndex]);
+    md.appendMarkdown(`<span style="color:${gutterColorHex};">████</span>\n\n`);
 
     // ═══════════════════════════════════════════════════════════════
     // TOP HEADER - Attribution with color
