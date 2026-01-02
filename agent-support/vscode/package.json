@@ -69,21 +69,24 @@
     "publish": "vsce publish"
   },
   "devDependencies": {
-    "ovsx": "0.10.4",
-    "@vscode/vsce": "3.6.0",
-    "@types/vscode": "1.99.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
+    "@types/vscode": "1.99.1",
     "@typescript-eslint/eslint-plugin": "^8.31.1",
     "@typescript-eslint/parser": "^8.31.1",
-    "eslint": "^9.25.1",
-    "typescript": "^5.8.3",
     "@vscode/test-cli": "^0.0.11",
-    "@vscode/test-electron": "^2.5.2"
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "3.6.0",
+    "eslint": "^9.25.1",
+    "ovsx": "0.10.4",
+    "typescript": "^5.8.3"
   },
   "resolutions": {
     "glob": ">=11.1.0",
     "tar-fs": ">=2.1.4",
     "test-exclude": ">=7.0.0"
+  },
+  "dependencies": {
+    "posthog-node": "^5.18.1"
   }
 }
