@@ -609,10 +609,10 @@ fn test_thinking_transcript_saves_to_internal_db_after_commit() {
         serde_json::from_str(&prompt.messages_json).expect("Messages should be valid JSON");
     let messages_array = messages["messages"].as_array().expect("Should have messages array");
 
-    // Should have 7 messages (1 user + 2 thinking + 2 text + 1 tool_use + 1 tool_result)
+    // Should have 6 messages (1 user + 2 thinking + 2 text + 1 tool_use, tool_result skipped)
     assert_eq!(
         messages_array.len(),
-        7,
+        6,
         "Should have all messages including thinking"
     );
 }
