@@ -105,6 +105,7 @@ fn print_config_help() {
     eprintln!("  disable_auto_updates         Disable auto updates (bool)");
     eprintln!("  update_channel               Update channel (latest/next)");
     eprintln!("  feature_flags                Feature flags (object)");
+    eprintln!("  api_key                      API key for X-API-Key header");
     eprintln!("");
     eprintln!("Repository Patterns:");
     eprintln!("  For exclude/allow/exclude_prompts_in_repositories, you can provide:");
@@ -281,6 +282,12 @@ fn show_all_config() -> Result<(), String> {
         .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
     effective_config.insert("feature_flags".to_string(), flags_value);
 
+    // API key - show masked value if set
+    if let Some(ref key) = file_config.api_key {
+        let masked = mask_api_key(key);
+        effective_config.insert("api_key".to_string(), Value::String(masked));
+    }
+
     let json = serde_json::to_string_pretty(&effective_config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -334,6 +341,13 @@ fn get_config_value(key: &str) -> Result<(), String> {
                 // Show effective flags with defaults applied
                 serde_json::to_value(runtime_config.get_feature_flags())
                     .unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
+            }
+            "api_key" => {
+                if let Some(ref key) = file_config.api_key {
+                    Value::String(mask_api_key(key))
+                } else {
+                    Value::Null
+                }
             }
             _ => return Err(format!("Unknown config key: {}", key)),
         };
@@ -451,6 +465,12 @@ fn set_config_value(key: &str, value: &str, add_mode: bool) -> Result<(), String
                 file_config.feature_flags = Some(json_value);
                 crate::config::save_file_config(&file_config)?;
                 eprintln!("[feature_flags]: {}", value);
+            }
+            "api_key" => {
+                file_config.api_key = Some(value.to_string());
+                crate::config::save_file_config(&file_config)?;
+                let masked = mask_api_key(value);
+                eprintln!("[api_key]: {}", masked);
             }
             _ => return Err(format!("Unknown config key: {}", key)),
         }
@@ -586,6 +606,13 @@ fn unset_config_value(key: &str) -> Result<(), String> {
                 crate::config::save_file_config(&file_config)?;
                 if let Some(v) = old_value {
                     eprintln!("- [feature_flags]: {}", v);
+                }
+            }
+            "api_key" => {
+                let old_value = file_config.api_key.take();
+                crate::config::save_file_config(&file_config)?;
+                if old_value.is_some() {
+                    eprintln!("- [api_key]: ****");
                 }
             }
             _ => return Err(format!("Unknown config key: {}", key)),
@@ -762,4 +789,13 @@ fn parse_value(value: &str) -> Result<Value, String> {
 
     // Otherwise treat as string
     Ok(Value::String(value.to_string()))
+}
+
+/// Mask an API key for display (show first 4 and last 4 chars if long enough)
+fn mask_api_key(key: &str) -> String {
+    if key.len() > 8 {
+        format!("{}...{}", &key[..4], &key[key.len() - 4..])
+    } else {
+        "****".to_string()
+    }
 }

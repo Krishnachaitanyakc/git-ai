@@ -9,6 +9,8 @@ pub struct ApiContext {
     pub base_url: String,
     /// Optional authentication token
     pub auth_token: Option<String>,
+    /// Optional API key for X-API-Key header
+    pub api_key: Option<String>,
     /// Request timeout in seconds
     pub timeout_secs: Option<u64>,
 }
@@ -22,9 +24,11 @@ impl ApiContext {
     /// Create a new API context without authentication
     /// If base_url is None, uses api_base_url from config (which can be set via config file, env var, or defaults)
     pub fn new(base_url: Option<String>) -> Self {
+        let cfg = config::Config::get();
         Self {
             base_url: base_url.unwrap_or_else(Self::default_base_url),
             auth_token: None,
+            api_key: cfg.api_key().map(|s| s.to_string()),
             timeout_secs: Some(30),
         }
     }
@@ -32,9 +36,11 @@ impl ApiContext {
     /// Create a new API context with authentication
     /// If base_url is None, uses api_base_url from config (which can be set via config file, env var, or defaults)
     pub fn with_auth(base_url: Option<String>, auth_token: String) -> Self {
+        let cfg = config::Config::get();
         Self {
             base_url: base_url.unwrap_or_else(Self::default_base_url),
             auth_token: Some(auth_token),
+            api_key: cfg.api_key().map(|s| s.to_string()),
             timeout_secs: Some(30),
         }
     }
@@ -78,6 +84,11 @@ impl ApiContext {
         let user_agent = format!("git-ai/{}", env!("CARGO_PKG_VERSION"));
         request = request.with_header("User-Agent", user_agent);
 
+        // Add API key header if present
+        if let Some(api_key) = &self.api_key {
+            request = request.with_header("X-API-Key", api_key);
+        }
+
         // Set timeout if specified
         if let Some(timeout) = self.timeout_secs {
             request = request.with_timeout(timeout);
@@ -104,6 +115,11 @@ impl ApiContext {
         // Add User-Agent header
         let user_agent = format!("git-ai/{}", env!("CARGO_PKG_VERSION"));
         request = request.with_header("User-Agent", user_agent);
+
+        // Add API key header if present
+        if let Some(api_key) = &self.api_key {
+            request = request.with_header("X-API-Key", api_key);
+        }
 
         // Set timeout if specified
         if let Some(timeout) = self.timeout_secs {

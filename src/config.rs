@@ -29,6 +29,7 @@ pub struct Config {
     feature_flags: FeatureFlags,
     api_base_url: String,
     prompt_storage: String,
+    api_key: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +86,8 @@ pub struct FileConfig {
     pub api_base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_storage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -248,6 +251,11 @@ impl Config {
         &self.prompt_storage
     }
 
+    /// Returns the API key if configured
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
     /// Override feature flags for testing purposes.
     /// Only available when the `test-support` feature is enabled or in test mode.
     /// Must be `pub` to work with integration tests in the `tests/` directory.
@@ -397,6 +405,17 @@ fn build_config() -> Config {
         }
     };
 
+    // Get API key from env var or config file (env var takes precedence)
+    let api_key = env::var("GIT_AI_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            file_cfg
+                .as_ref()
+                .and_then(|c| c.api_key.clone())
+                .filter(|s| !s.is_empty())
+        });
+
     #[cfg(any(test, feature = "test-support"))]
     {
         let mut config = Config {
@@ -412,6 +431,7 @@ fn build_config() -> Config {
             feature_flags,
             api_base_url,
             prompt_storage,
+            api_key,
         };
         apply_test_config_patch(&mut config);
         config
@@ -431,6 +451,7 @@ fn build_config() -> Config {
         feature_flags,
         api_base_url,
         prompt_storage,
+        api_key,
     }
 }
 
@@ -646,6 +667,7 @@ mod tests {
             feature_flags: FeatureFlags::default(),
             api_base_url: DEFAULT_API_BASE_URL.to_string(),
             prompt_storage: "default".to_string(),
+            api_key: None,
         }
     }
 
@@ -749,6 +771,7 @@ mod tests {
             feature_flags: FeatureFlags::default(),
             api_base_url: DEFAULT_API_BASE_URL.to_string(),
             prompt_storage: "default".to_string(),
+            api_key: None,
         }
     }
 
