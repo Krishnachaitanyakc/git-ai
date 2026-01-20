@@ -1914,6 +1914,134 @@ pub fn find_repository_in_path(path: &str) -> Result<Repository, GitAiError> {
     return find_repository(&global_args);
 }
 
+/// Find the git repository that contains the given file path by walking up the directory tree.
+///
+/// This function is useful when working with multi-repository workspaces where the workspace
+/// root itself may not be a git repository, but contains multiple independent git repositories.
+///
+/// # Arguments
+/// * `file_path` - Absolute path to a file
+/// * `workspace_root` - Optional workspace root path. If provided, the search will stop at this
+///                      boundary to avoid finding repositories outside the workspace.
+///
+/// # Returns
+/// * `Ok(Repository)` - The repository containing the file
+/// * `Err(GitAiError)` - If no repository is found or other errors occur
+pub fn find_repository_for_file(
+    file_path: &str,
+    workspace_root: Option<&str>,
+) -> Result<Repository, GitAiError> {
+    let file_path = PathBuf::from(file_path);
+
+    // Get the directory containing the file (or the path itself if it's a directory)
+    let start_dir = if file_path.is_dir() {
+        file_path.clone()
+    } else {
+        file_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| file_path.clone())
+    };
+
+    // Canonicalize paths for consistent comparison
+    let start_dir = start_dir
+        .canonicalize()
+        .unwrap_or_else(|_| start_dir.clone());
+
+    let workspace_boundary = workspace_root
+        .map(|root| {
+            PathBuf::from(root)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(root))
+        });
+
+    // Walk up the directory tree looking for a .git directory
+    let mut current_dir = Some(start_dir.as_path());
+
+    while let Some(dir) = current_dir {
+        // Check if we've reached the workspace boundary
+        if let Some(ref boundary) = workspace_boundary {
+            // Stop if we've gone above the workspace root
+            if !dir.starts_with(boundary) && dir != boundary.as_path() {
+                break;
+            }
+        }
+
+        // Check for .git directory or file (file for submodules/worktrees)
+        let git_path = dir.join(".git");
+        if git_path.exists() {
+            // Found a .git - but we need to check if this is a submodule
+            // Submodules have a .git file (not directory) that points to the parent's .git/modules
+            if git_path.is_file() {
+                // This is a submodule - read the file to check if it points to modules/
+                if let Ok(content) = std::fs::read_to_string(&git_path) {
+                    if content.contains("gitdir:") && content.contains("/modules/") {
+                        // This is a submodule, skip it and continue searching up
+                        current_dir = dir.parent();
+                        continue;
+                    }
+                }
+            }
+
+            // Found a real git repository, use find_repository_in_path
+            return find_repository_in_path(&dir.to_string_lossy());
+        }
+
+        current_dir = dir.parent();
+    }
+
+    Err(GitAiError::Generic(format!(
+        "No git repository found for file: {}",
+        file_path.display()
+    )))
+}
+
+/// Group edited file paths by their containing git repository.
+///
+/// This function takes a list of file paths and groups them by the git repository
+/// they belong to. Files that don't belong to any repository are collected separately.
+///
+/// # Arguments
+/// * `file_paths` - List of absolute file paths to group
+/// * `workspace_root` - Optional workspace root to limit repository detection
+///
+/// # Returns
+/// A tuple of:
+/// * `HashMap<PathBuf, (Repository, Vec<String>)>` - Map of repo root to (repo, file paths)
+/// * `Vec<String>` - Files that couldn't be associated with any repository
+pub fn group_files_by_repository(
+    file_paths: &[String],
+    workspace_root: Option<&str>,
+) -> (HashMap<PathBuf, (Repository, Vec<String>)>, Vec<String>) {
+    let mut repo_files: HashMap<PathBuf, (Repository, Vec<String>)> = HashMap::new();
+    let mut orphan_files: Vec<String> = Vec::new();
+
+    for file_path in file_paths {
+        match find_repository_for_file(file_path, workspace_root) {
+            Ok(repo) => {
+                let workdir = match repo.workdir() {
+                    Ok(dir) => dir,
+                    Err(_) => {
+                        orphan_files.push(file_path.clone());
+                        continue;
+                    }
+                };
+
+                repo_files
+                    .entry(workdir.clone())
+                    .or_insert_with(|| (repo, Vec::new()))
+                    .1
+                    .push(file_path.clone());
+            }
+            Err(_) => {
+                orphan_files.push(file_path.clone());
+            }
+        }
+    }
+
+    (repo_files, orphan_files)
+}
+
 /// Helper to execute a git command
 pub fn exec_git(args: &[String]) -> Result<Output, GitAiError> {
     // TODO Make sure to handle process signals, etc.

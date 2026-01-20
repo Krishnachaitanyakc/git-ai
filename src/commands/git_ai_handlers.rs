@@ -13,7 +13,7 @@ use crate::commands::checkpoint_agent::agent_v1_preset::AgentV1Preset;
 use crate::config;
 use crate::git::find_repository;
 use crate::git::find_repository_in_path;
-use crate::git::repository::CommitRange;
+use crate::git::repository::{group_files_by_repository, CommitRange};
 use crate::observability::wrapper_performance_targets::log_performance_for_checkpoint;
 use crate::observability::{self, log_message};
 use crate::utils::is_interactive_terminal;
@@ -435,15 +435,189 @@ fn handle_checkpoint(args: &[String]) {
     let final_working_dir = agent_run_result
         .as_ref()
         .and_then(|r| r.repo_working_dir.clone())
-        .unwrap_or_else(|| repository_working_dir);
-    // Find the git repository
-    let repo = match find_repository_in_path(&final_working_dir) {
-        Ok(repo) => repo,
-        Err(e) => {
-            eprintln!("Failed to find repository: {}", e);
-            std::process::exit(0);
+        .unwrap_or_else(|| repository_working_dir.clone());
+
+    // Try to find the git repository
+    // First, try the standard approach using the working directory
+    let repo_result = find_repository_in_path(&final_working_dir);
+
+    // If the working directory is not a git repository, we need to detect repos from file paths
+    // This happens in multi-repo workspaces where the workspace root contains multiple git repos
+    let needs_file_based_repo_detection = repo_result.is_err();
+
+    if needs_file_based_repo_detection {
+        // Workspace root is not a git repo - try to detect repositories from edited files
+        let files_to_check = agent_run_result.as_ref().and_then(|r| {
+            if r.checkpoint_kind == CheckpointKind::Human {
+                r.will_edit_filepaths.as_ref()
+            } else {
+                r.edited_filepaths.as_ref()
+            }
+        });
+
+        if let Some(files) = files_to_check {
+            if !files.is_empty() {
+                // Convert relative paths to absolute paths based on workspace root
+                let absolute_files: Vec<String> = files
+                    .iter()
+                    .map(|f| {
+                        let path = std::path::Path::new(f);
+                        if path.is_absolute() {
+                            f.clone()
+                        } else {
+                            std::path::Path::new(&repository_working_dir)
+                                .join(f)
+                                .to_string_lossy()
+                                .to_string()
+                        }
+                    })
+                    .collect();
+
+                // Group files by their containing repository
+                let (repo_files, orphan_files) =
+                    group_files_by_repository(&absolute_files, Some(&repository_working_dir));
+
+                if repo_files.is_empty() {
+                    eprintln!(
+                        "Failed to find any git repositories for the edited files. Orphaned files: {:?}",
+                        orphan_files
+                    );
+                    std::process::exit(0);
+                }
+
+                // Log orphan files if any
+                if !orphan_files.is_empty() {
+                    eprintln!(
+                        "Warning: {} file(s) are not in any git repository and will be skipped: {:?}",
+                        orphan_files.len(),
+                        orphan_files
+                    );
+                }
+
+                // Determine if this is truly a multi-repo workspace or just a single nested repo
+                let is_multi_repo = repo_files.len() > 1;
+
+                if is_multi_repo {
+                    eprintln!(
+                        "Multi-repo workspace detected. Found {} repositories with edits.",
+                        repo_files.len()
+                    );
+                } else {
+                    eprintln!(
+                        "Workspace root is not a git repository. Detected repository from edited files."
+                    );
+                }
+
+                let checkpoint_kind = agent_run_result
+                    .as_ref()
+                    .map(|r| r.checkpoint_kind)
+                    .unwrap_or(CheckpointKind::Human);
+
+                let checkpoint_start = std::time::Instant::now();
+                let mut total_files_edited = 0;
+                let mut repos_processed = 0;
+                let total_repos = repo_files.len();
+
+                // Process each repository separately
+                for (repo_workdir, (repo, repo_file_paths)) in repo_files {
+                    repos_processed += 1;
+                    eprintln!(
+                        "Processing repository {}/{}: {}",
+                        repos_processed,
+                        total_repos,
+                        repo_workdir.display()
+                    );
+
+                    // Get user name from this repo's config
+                    let default_user_name = match repo.config_get_str("user.name") {
+                        Ok(Some(name)) if !name.trim().is_empty() => name,
+                        _ => {
+                            eprintln!(
+                                "Warning: git user.name not configured for {}. Using 'unknown'.",
+                                repo_workdir.display()
+                            );
+                            "unknown".to_string()
+                        }
+                    };
+
+                    // Create a modified agent_run_result with only this repo's files
+                    let repo_agent_result = agent_run_result.as_ref().map(|r| {
+                        let mut modified = r.clone();
+                        modified.repo_working_dir = Some(repo_workdir.to_string_lossy().to_string());
+                        if r.checkpoint_kind == CheckpointKind::Human {
+                            modified.will_edit_filepaths = Some(repo_file_paths.clone());
+                            modified.edited_filepaths = None;
+                        } else {
+                            modified.edited_filepaths = Some(repo_file_paths.clone());
+                            modified.will_edit_filepaths = None;
+                        }
+                        modified
+                    });
+
+                    let checkpoint_result = commands::checkpoint::run(
+                        &repo,
+                        &default_user_name,
+                        checkpoint_kind,
+                        show_working_log,
+                        reset,
+                        false,
+                        repo_agent_result,
+                        false,
+                    );
+
+                    match checkpoint_result {
+                        Ok((_, files_edited, _)) => {
+                            total_files_edited += files_edited;
+                            eprintln!(
+                                "  Checkpoint for {} completed ({} files)",
+                                repo_workdir.display(),
+                                files_edited
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  Checkpoint for {} failed: {}",
+                                repo_workdir.display(),
+                                e
+                            );
+                            let context = serde_json::json!({
+                                "function": "checkpoint",
+                                "repo": repo_workdir.to_string_lossy(),
+                                "checkpoint_kind": format!("{:?}", checkpoint_kind)
+                            });
+                            observability::log_error(&e, Some(context));
+                            // Continue processing other repos instead of exiting
+                        }
+                    }
+                }
+
+                let elapsed = checkpoint_start.elapsed();
+                log_performance_for_checkpoint(total_files_edited, elapsed, checkpoint_kind);
+                if is_multi_repo {
+                    eprintln!(
+                        "Checkpoint completed in {:?} ({} repositories, {} total files)",
+                        elapsed, repos_processed, total_files_edited
+                    );
+                } else {
+                    eprintln!("Checkpoint completed in {:?}", elapsed);
+                }
+                return;
+            }
         }
-    };
+
+        // No files to check, fall through to error
+        eprintln!("Failed to find repository: workspace root is not a git repository and no edited files provided");
+        std::process::exit(0);
+    }
+
+    // Standard single-repo mode
+    let repo = repo_result.unwrap();
+
+    // Get the effective working directory from the detected repository
+    let effective_working_dir = repo
+        .workdir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| final_working_dir.clone());
 
     let checkpoint_kind = agent_run_result
         .as_ref()
@@ -460,7 +634,7 @@ fn handle_checkpoint(args: &[String]) {
                 .collect();
             if paths.is_empty() { None } else { Some(paths) }
         } else {
-            Some(get_all_files_for_mock_ai(&final_working_dir))
+            Some(get_all_files_for_mock_ai(&effective_working_dir))
         };
 
         agent_run_result = Some(AgentRunResult {
@@ -480,7 +654,7 @@ fn handle_checkpoint(args: &[String]) {
             transcript: None,
             will_edit_filepaths: Some(will_edit_filepaths.unwrap_or_default()),
             edited_filepaths: None,
-            repo_working_dir: Some(final_working_dir),
+            repo_working_dir: Some(effective_working_dir),
             dirty_files: None,
         });
     }
