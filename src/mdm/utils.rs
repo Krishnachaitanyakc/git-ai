@@ -96,6 +96,13 @@ pub fn binary_exists(name: &str) -> bool {
     false
 }
 
+/// Check if running in GitHub Codespaces environment
+/// In Codespaces, VS Code extensions must be configured via devcontainer.json
+/// rather than installed via CLI
+pub fn is_github_codespaces() -> bool {
+    std::env::var("CODESPACES").map(|v| v == "true").unwrap_or(false)
+}
+
 /// Get the user's home directory
 pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))

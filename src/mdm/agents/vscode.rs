@@ -2,8 +2,9 @@ use crate::error::GitAiError;
 use crate::mdm::hook_installer::{HookCheckResult, HookInstaller, HookInstallerParams, InstallResult, UninstallResult};
 use crate::mdm::utils::{
     binary_exists, get_binary_version, home_dir, install_vsc_editor_extension,
-    is_vsc_editor_extension_installed, parse_version, settings_paths_for_products,
-    should_process_settings_target, version_meets_requirement, MIN_CODE_VERSION,
+    is_github_codespaces, is_vsc_editor_extension_installed, parse_version,
+    settings_paths_for_products, should_process_settings_target, version_meets_requirement,
+    MIN_CODE_VERSION,
 };
 use crate::utils::debug_log;
 use std::path::PathBuf;
@@ -108,6 +109,17 @@ impl HookInstaller for VSCodeInstaller {
         dry_run: bool,
     ) -> Result<Vec<InstallResult>, GitAiError> {
         let mut results = Vec::new();
+
+        // Skip extension installation in GitHub Codespaces
+        // Extensions must be configured via devcontainer.json in Codespaces
+        if is_github_codespaces() {
+            results.push(InstallResult {
+                changed: false,
+                diff: None,
+                message: "VS Code: Skipped in GitHub Codespaces. Add the extension to your devcontainer.json: \"customizations\": { \"vscode\": { \"extensions\": [\"git-ai.git-ai-vscode\"] } }".to_string(),
+            });
+            return Ok(results);
+        }
 
         // Install VS Code extension
         if binary_exists("code") {
