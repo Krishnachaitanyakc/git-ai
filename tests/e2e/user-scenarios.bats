@@ -41,7 +41,7 @@ setup() {
     echo "# Test Project" > README.md
     git add README.md
     git commit -m "Initial commit"
-    git config --global init.defaultBranch main
+    git config init.defaultBranch main
     
     # Check if jq is available (needed for JSON parsing tests)
     if ! command -v jq &> /dev/null; then
@@ -909,27 +909,27 @@ EOF
     # - human_additions: 2 (H: Human Line 2 + Line 5: Initial in final diff)
     # - ai_additions: 4 (AI Line 1, 3, 4, 5 in final diff)
     # - ai_accepted: 4 (all AI lines accepted)
-    # - total_ai_additions: 5 (3 from commit 1 + 2 from commit 2)
-    # - total_ai_deletions: 5 (2 from commit 1 + 3 from commit 2)
-    # - tool_model_breakdown.ai_additions: 5 (accumulated from both commits)
+    # - total_ai_additions: 2 (from merged log after squash-authorship)
+    # - total_ai_deletions: 3 (from merged log after squash-authorship)
+    # - tool_model_breakdown.ai_additions: 4 (accepted + mixed in final diff)
 
     expected_json='{
         "human_additions": 2,
         "mixed_additions": 0,
         "ai_additions": 4,
         "ai_accepted": 4,
-        "total_ai_additions": 5,
-        "total_ai_deletions": 5,
+        "total_ai_additions": 2,
+        "total_ai_deletions": 3,
         "time_waiting_for_ai": 0,
         "git_diff_deleted_lines": 0,
         "git_diff_added_lines": 6,
         "tool_model_breakdown": {
             "mock_ai::unknown": {
-                "ai_additions": 5,
+                "ai_additions": 4,
                 "mixed_additions": 0,
                 "ai_accepted": 4,
-                "total_ai_additions": 5,
-                "total_ai_deletions": 5,
+                "total_ai_additions": 2,
+                "total_ai_deletions": 3,
                 "time_waiting_for_ai": 0
             }
         }
