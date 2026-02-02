@@ -151,6 +151,7 @@ tasks {
 }
 
 // Sentry configuration for source context uploads
+// Only enable source context when auth token is available; otherwise Sentry SDK still works for runtime error tracking
 sentry {
     val sentryToken = System.getenv("SENTRY_AUTH_TOKEN")
         ?: providers.gradleProperty("SENTRY_AUTH_TOKEN").orNull
@@ -160,10 +161,8 @@ sentry {
         org = "git-ai-oss"
         projectName = "jetbrains-plugin"
         authToken = sentryToken
-    } else {
-        // Disable Sentry when no token is available (e.g., Qodana analysis, local dev without token)
-        enabled.set(false)
     }
+    // When no token: includeSourceContext defaults to false, so no source upload is attempted
 }
 
 intellijPlatformTesting {
