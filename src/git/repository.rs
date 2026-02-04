@@ -2218,7 +2218,8 @@ fn parse_diff_added_lines(diff_output: &str) -> Result<HashMap<String, Vec<u32>>
         // 2. Quoted (for non-ASCII): +++ "b/path/to/file.txt" (with octal escapes inside)
         if line.starts_with("+++ b/") {
             // Unquoted path (ASCII only)
-            let raw_path = &line[6..];
+            // Note: Git adds trailing tab after filenames with spaces, so we trim_end
+            let raw_path = &line[6..].trim_end();
             let file_path = crate::utils::unescape_git_path(raw_path);
             current_file = Some(file_path);
         } else if line.starts_with("+++ \"b/") {
@@ -2277,7 +2278,8 @@ fn parse_diff_added_lines_with_insertions(
         // 2. Quoted (for non-ASCII): +++ "b/path/to/file.txt" (with octal escapes inside)
         if line.starts_with("+++ b/") {
             // Unquoted path (ASCII only)
-            let raw_path = &line[6..];
+            // Note: Git adds trailing tab after filenames with spaces, so we trim_end
+            let raw_path = &line[6..].trim_end();
             let file_path = crate::utils::unescape_git_path(raw_path);
             current_file = Some(file_path);
         } else if line.starts_with("+++ \"b/") {

@@ -260,7 +260,8 @@ fn parse_diff_hunks(diff_text: &str) -> Result<Vec<DiffHunk>, GitAiError> {
         // 2. Quoted (for non-ASCII): +++ "b/path/to/file.txt" (with octal escapes inside)
         if line.starts_with("+++ b/") {
             // Unquoted path (ASCII only)
-            let raw_path = &line[6..];
+            // Note: Git adds trailing tab after filenames with spaces, so we trim_end
+            let raw_path = &line[6..].trim_end();
             current_file = crate::utils::unescape_git_path(raw_path);
         } else if line.starts_with("+++ \"b/") {
             // Quoted path (non-ASCII chars) - extract the quoted portion and unescape
@@ -561,7 +562,8 @@ fn get_diff_split_by_file(
             current_file.clear();
         } else if line.starts_with("+++ b/") {
             // Unquoted path (ASCII only)
-            let raw_path = &line[6..];
+            // Note: Git adds trailing tab after filenames with spaces, so we trim_end
+            let raw_path = &line[6..].trim_end();
             current_file = crate::utils::unescape_git_path(raw_path);
             current_diff.push_str(line);
             current_diff.push('\n');
@@ -719,7 +721,8 @@ pub fn format_annotated_diff(
             result.push_str(&format_line(line, LineType::DiffHeader, use_color, None));
         } else if line.starts_with("+++ b/") {
             // Unquoted path (ASCII only)
-            let raw_path = &line[6..];
+            // Note: Git adds trailing tab after filenames with spaces, so we trim_end
+            let raw_path = &line[6..].trim_end();
             current_file = crate::utils::unescape_git_path(raw_path);
             result.push_str(&format_line(line, LineType::DiffHeader, use_color, None));
         } else if line.starts_with("+++ \"b/") {
