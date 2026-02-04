@@ -64,6 +64,39 @@ fn install_forwarding_handlers() {
     }
 }
 
+/// Directly exec the real git binary, completely replacing this process.
+/// This is used when we want to bypass all git-ai logic (e.g., in test suites).
+/// On Unix, this uses exec() which replaces the current process.
+/// On non-Unix, this falls back to spawn + exit.
+#[allow(dead_code)]
+fn exec_git_directly(args: &[String]) {
+    #[cfg(unix)]
+    {
+        let err = Command::new(config::Config::get().git_cmd())
+            .args(args)
+            .exec();
+        // exec() only returns if there was an error
+        eprintln!("Failed to exec git: {}", err);
+        std::process::exit(1);
+    }
+    #[cfg(not(unix))]
+    {
+        // Fall back to spawn + wait + exit on non-Unix platforms
+        match Command::new(config::Config::get().git_cmd())
+            .args(args)
+            .status()
+        {
+            Ok(status) => {
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            Err(e) => {
+                eprintln!("Failed to execute git: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn uninstall_forwarding_handlers() {
     unsafe {
@@ -90,6 +123,25 @@ pub fn handle_git(args: &[String]) {
     // If we're being invoked from a shell completion context, bypass git-ai logic
     // and delegate directly to the real git so existing completion scripts work.
     if in_shell_completion_context() {
+        let orig_args: Vec<String> = std::env::args().skip(1).collect();
+        proxy_to_git(&orig_args, true);
+        return;
+    }
+
+    // Allow users to explicitly disable git-ai via environment variable.
+    // This is useful for CI pipelines, scripts, or debugging.
+    if std::env::var("GIT_AI_DISABLED").is_ok()
+        || std::env::var("GIT_AI_PASSTHROUGH").is_ok()
+    {
+        let orig_args: Vec<String> = std::env::args().skip(1).collect();
+        proxy_to_git(&orig_args, true);
+        return;
+    }
+
+    // If GIT_TEST_INSTALLED is set, we're running in the official git test suite.
+    // Bypass all git-ai logic to avoid polluting test isolation with side effects
+    // like creating .git/ai/ directories, refs/notes/ai, or ~/.git-ai/ files.
+    if std::env::var("GIT_TEST_INSTALLED").is_ok() {
         let orig_args: Vec<String> = std::env::args().skip(1).collect();
         proxy_to_git(&orig_args, true);
         return;

@@ -30,28 +30,31 @@ pub struct RepoStorage {
 }
 
 impl RepoStorage {
+    /// Create a new RepoStorage without initializing directories.
+    /// Directories will be created lazily when needed via `ensure_initialized()`.
     pub fn for_repo_path(repo_path: &Path, repo_workdir: &Path) -> RepoStorage {
         let ai_dir = repo_path.join("ai");
         let working_logs_dir = ai_dir.join("working_logs");
         let rewrite_log_file = ai_dir.join("rewrite_log");
         let logs_dir = ai_dir.join("logs");
 
-        let config = RepoStorage {
+        RepoStorage {
             repo_path: repo_path.to_path_buf(),
             repo_workdir: repo_workdir.to_path_buf(),
             working_logs: working_logs_dir,
             rewrite_log: rewrite_log_file,
             logs: logs_dir,
-        };
-
-        config.ensure_config_directory().unwrap();
-        return config;
+        }
+        // NOTE: We no longer call ensure_config_directory() here.
+        // Directories are created lazily when write operations are performed.
     }
 
-    fn ensure_config_directory(&self) -> Result<(), GitAiError> {
+    /// Ensure the .git/ai directory structure exists.
+    /// Called lazily before write operations.
+    pub fn ensure_initialized(&self) -> Result<(), GitAiError> {
         let ai_dir = self.repo_path.join("ai");
 
-        fs::create_dir_all(ai_dir)?;
+        fs::create_dir_all(&ai_dir)?;
 
         // Create working_logs directory
         fs::create_dir_all(&self.working_logs)?;
@@ -59,7 +62,7 @@ impl RepoStorage {
         // Create logs directory for Sentry events
         fs::create_dir_all(&self.logs)?;
 
-        if !&self.rewrite_log.exists() && !&self.rewrite_log.is_file() {
+        if !self.rewrite_log.exists() && !self.rewrite_log.is_file() {
             fs::write(&self.rewrite_log, "")?;
         }
 
@@ -69,6 +72,11 @@ impl RepoStorage {
     /* Working Log Persistance */
 
     pub fn working_log_for_base_commit(&self, sha: &str) -> PersistedWorkingLog {
+        // Ensure the .git/ai directory structure exists before creating working log
+        self.ensure_initialized().unwrap_or_else(|e| {
+            debug_log(&format!("Warning: Failed to initialize repo storage: {}", e));
+        });
+        
         let working_log_dir = self.working_logs.join(sha);
         fs::create_dir_all(&working_log_dir).unwrap();
         let canonical_workdir = self
@@ -132,6 +140,8 @@ impl RepoStorage {
         &self,
         event: RewriteLogEvent,
     ) -> Result<Vec<RewriteLogEvent>, GitAiError> {
+        // Ensure the .git/ai directory structure exists before writing
+        self.ensure_initialized()?;
         append_event_to_file(&self.rewrite_log, event)?;
         self.read_rewrite_events()
     }
