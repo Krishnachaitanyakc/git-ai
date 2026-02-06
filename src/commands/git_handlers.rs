@@ -64,39 +64,6 @@ fn install_forwarding_handlers() {
     }
 }
 
-/// Directly exec the real git binary, completely replacing this process.
-/// This is used when we want to bypass all git-ai logic (e.g., in test suites).
-/// On Unix, this uses exec() which replaces the current process.
-/// On non-Unix, this falls back to spawn + exit.
-#[allow(dead_code)]
-fn exec_git_directly(args: &[String]) {
-    #[cfg(unix)]
-    {
-        let err = Command::new(config::Config::get().git_cmd())
-            .args(args)
-            .exec();
-        // exec() only returns if there was an error
-        eprintln!("Failed to exec git: {}", err);
-        std::process::exit(1);
-    }
-    #[cfg(not(unix))]
-    {
-        // Fall back to spawn + wait + exit on non-Unix platforms
-        match Command::new(config::Config::get().git_cmd())
-            .args(args)
-            .status()
-        {
-            Ok(status) => {
-                std::process::exit(status.code().unwrap_or(1));
-            }
-            Err(e) => {
-                eprintln!("Failed to execute git: {}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
 #[cfg(unix)]
 fn uninstall_forwarding_handlers() {
     unsafe {
