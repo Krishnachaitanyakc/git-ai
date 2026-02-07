@@ -105,15 +105,6 @@ pub fn handle_git(args: &[String]) {
         return;
     }
 
-    // If GIT_TEST_INSTALLED is set, we're running in the official git test suite.
-    // Bypass all git-ai logic to avoid polluting test isolation with side effects
-    // like creating .git/ai/ directories, refs/notes/ai, or ~/.git-ai/ files.
-    if std::env::var("GIT_TEST_INSTALLED").is_ok() {
-        let orig_args: Vec<String> = std::env::args().skip(1).collect();
-        proxy_to_git(&orig_args, true);
-        return;
-    }
-
     let mut parsed_args = parse_git_cli_args(args);
 
     let mut repository_option = find_repository(&parsed_args.global_args).ok();
