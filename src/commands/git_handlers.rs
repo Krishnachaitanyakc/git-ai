@@ -17,7 +17,7 @@ use crate::git::repository::Repository;
 use crate::observability;
 
 use crate::observability::wrapper_performance_targets::log_performance_target_if_violated;
-use crate::utils::{debug_log, is_interactive_terminal};
+use crate::utils::debug_log;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(unix)]
