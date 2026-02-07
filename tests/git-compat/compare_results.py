@@ -92,11 +92,20 @@ def main():
 
     # Find tests that fail ONLY with git-ai (not standard git)
     gitai_only_failures: Dict[str, Set[int]] = {}
+    # Tests that completely failed (crash, timeout, no TAP output) only under git-ai
+    gitai_only_complete_failures = []
     for test, indices in gitai_failures.items():
         std_indices = standard_failures.get(test, set())
-        only_gitai = indices - std_indices
-        if only_gitai:
-            gitai_only_failures[test] = only_gitai
+        if not indices and test not in standard_failures:
+            # Test completely failed under git-ai (no subtest-level info) but
+            # passed under standard git — this is a regression.
+            gitai_only_complete_failures.append(test)
+        else:
+            only_gitai = indices - std_indices
+            if only_gitai:
+                gitai_only_failures[test] = only_gitai
+
+    has_regressions = bool(gitai_only_failures) or bool(gitai_only_complete_failures)
 
     print("=== Git Compatibility Test Analysis ===")
     print()
@@ -104,9 +113,11 @@ def main():
     print(f"Git-AI failures: {sum(len(v) for v in gitai_failures.values())} subtests in {len(gitai_failures)} tests")
     print()
 
-    if gitai_only_failures:
+    if has_regressions:
         print("❌ REGRESSIONS DETECTED: Tests that fail with git-ai but NOT with standard git:")
         print()
+        for test in sorted(gitai_only_complete_failures):
+            print(f"  {test}: COMPLETE FAILURE (crash, timeout, or no TAP output)")
         for test in sorted(gitai_only_failures.keys()):
             indices = gitai_only_failures[test]
             print(f"  {test}: subtests {condense_indices(indices)}")
