@@ -3,7 +3,6 @@ use git_ai::authorship::stats::CommitStats;
 use insta::assert_debug_snapshot;
 use repos::test_file::ExpectedLineExt;
 use repos::test_repo::TestRepo;
-use serde_json;
 
 /// Extract the first complete JSON object from mixed stdout/stderr output.
 fn extract_json_object(output: &str) -> String {

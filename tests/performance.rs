@@ -1,4 +1,3 @@
-use git_ai::config::Config;
 use git_ai::feature_flags::FeatureFlags;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -46,7 +45,7 @@ mod tests {
         let repos = get_performance_repos();
         let test_repo = repos
             .get(repo_name)
-            .expect(&format!("{} repo should be available", repo_name));
+            .unwrap_or_else(|| panic!("{} repo should be available", repo_name));
         // Find random files for testing
         println!("Finding random files for {}", repo_name);
         let start = Instant::now();
@@ -74,16 +73,16 @@ mod tests {
                 let mut file = OpenOptions::new()
                     .append(true)
                     .open(&full_path)
-                    .expect(&format!("Should be able to open file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to open file: {}", file_path));
 
                 file.write_all(b"\n# Human Line\n")
-                    .expect(&format!("Should be able to write to file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to write to file: {}", file_path));
             }
 
             // Stage the files (regular git, no benchmark)
             for file_path in &files_to_edit {
                 repo.git(&["add", file_path])
-                    .expect(&format!("Should be able to stage file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to stage file: {}", file_path));
             }
 
             // Benchmark the commit operation (where pre-commit hook runs)
@@ -112,7 +111,7 @@ mod tests {
         let repos = get_performance_repos();
         let test_repo = repos
             .get(repo_name)
-            .expect(&format!("{} repo should be available", repo_name));
+            .unwrap_or_else(|| panic!("{} repo should be available", repo_name));
         // Find random files for testing
         let random_files = find_random_files(test_repo).expect("Should find random files");
 
@@ -138,30 +137,30 @@ mod tests {
                     let mut file = OpenOptions::new()
                         .append(true)
                         .open(&full_path)
-                        .expect(&format!("Should be able to open file: {}", file_path));
+                        .unwrap_or_else(|_| panic!("Should be able to open file: {}", file_path));
 
                     file.write_all(b"\n# Human Line\n")
-                        .expect(&format!("Should be able to write to file: {}", file_path));
+                        .unwrap_or_else(|_| panic!("Should be able to write to file: {}", file_path));
                 }
 
                 // Step 2: Run git-ai checkpoint
                 repo.git_ai(&["checkpoint", file_path])
-                    .expect(&format!("Should be able to checkpoint file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to checkpoint file: {}", file_path));
 
                 // Step 3: Insert "# AI Line" at the top of the file
                 {
                     let content = std::fs::read_to_string(&full_path)
-                        .expect(&format!("Should be able to read file: {}", file_path));
+                        .unwrap_or_else(|_| panic!("Should be able to read file: {}", file_path));
 
                     let new_content = format!("# AI Line\n{}", content);
 
                     std::fs::write(&full_path, new_content)
-                        .expect(&format!("Should be able to write to file: {}", file_path));
+                        .unwrap_or_else(|_| panic!("Should be able to write to file: {}", file_path));
                 }
 
                 // Step 4: Run git-ai mock_ai
                 repo.git_ai(&["checkpoint", "mock_ai", file_path])
-                    .expect(&format!("Should be able to mock_ai file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to mock_ai file: {}", file_path));
             }
 
             // Benchmark the commit operation (where pre-commit hook runs)
@@ -190,7 +189,7 @@ mod tests {
         let repos = get_performance_repos();
         let test_repo = repos
             .get(repo_name)
-            .expect(&format!("{} repo should be available", repo_name));
+            .unwrap_or_else(|| panic!("{} repo should be available", repo_name));
 
         // Create a sampler that runs 10 times
         let sampler = Sampler::new(10);
@@ -223,7 +222,7 @@ mod tests {
         let repos = get_performance_repos();
         let test_repo = repos
             .get(repo_name)
-            .expect(&format!("{} repo should be available", repo_name));
+            .unwrap_or_else(|| panic!("{} repo should be available", repo_name));
 
         // Find random files for testing
         let random_files = find_random_files(test_repo).expect("Should find random files");
@@ -248,16 +247,16 @@ mod tests {
                 let mut file = OpenOptions::new()
                     .append(true)
                     .open(&full_path)
-                    .expect(&format!("Should be able to open file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to open file: {}", file_path));
 
                 file.write_all(b"\n# Human Line\n")
-                    .expect(&format!("Should be able to write to file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to write to file: {}", file_path));
             }
 
             // Stage the files (regular git, no benchmark)
             for file_path in &files_to_edit {
                 repo.git(&["add", file_path])
-                    .expect(&format!("Should be able to stage file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to stage file: {}", file_path));
             }
 
             // Benchmark the commit operation (where pre-commit hook runs)
@@ -289,7 +288,7 @@ mod tests {
         let repos = get_performance_repos();
         let test_repo = repos
             .get(repo_name)
-            .expect(&format!("{} repo should be available", repo_name));
+            .unwrap_or_else(|| panic!("{} repo should be available", repo_name));
 
         // Create a sampler that runs 10 times
         let sampler = Sampler::new(10);
@@ -324,7 +323,7 @@ mod tests {
         let repos = get_performance_repos();
         let test_repo = repos
             .get(repo_name)
-            .expect(&format!("{} repo should be available", repo_name));
+            .unwrap_or_else(|| panic!("{} repo should be available", repo_name));
 
         // Find 1000 random files for testing
         println!("Finding 1000 random files for {}", repo_name);
@@ -356,10 +355,10 @@ mod tests {
                 let mut file = OpenOptions::new()
                     .append(true)
                     .open(&full_path)
-                    .expect(&format!("Should be able to open file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to open file: {}", file_path));
 
                 file.write_all(b"\n# AI Generated Line\n")
-                    .expect(&format!("Should be able to write to file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to write to file: {}", file_path));
             }
 
             // Step 2: Run git-ai checkpoint mock_ai -- <all pathspecs>
@@ -388,10 +387,10 @@ mod tests {
                 let mut file = OpenOptions::new()
                     .append(true)
                     .open(&full_path)
-                    .expect(&format!("Should be able to open file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to open file: {}", file_path));
 
                 file.write_all(b"\n# Human Line\n")
-                    .expect(&format!("Should be able to write to file: {}", file_path));
+                    .unwrap_or_else(|_| panic!("Should be able to write to file: {}", file_path));
             }
 
             // Step 4: Benchmark the checkpoint on the 100 human-edited files
@@ -461,10 +460,10 @@ fn clone_and_init_repos() -> HashMap<String, TestRepo> {
         if !(repo_path.exists() && repo_path.join(".git").exists()) {
             // Clone the repository with full history
             let output = Command::new("git")
-                .args(&["clone", url, name, "--depth=150000"])
+                .args(["clone", url, name, "--depth=150000"])
                 .current_dir(&perf_repos_dir)
                 .output()
-                .expect(&format!("Failed to clone repository: {}", name));
+                .unwrap_or_else(|_| panic!("Failed to clone repository: {}", name));
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -561,11 +560,10 @@ pub fn find_random_files_with_options(
                 dirs_to_visit.push(path);
             } else if path.is_file() {
                 // Get relative path from repo root
-                if let Ok(relative) = path.strip_prefix(repo_path) {
-                    if let Some(rel_str) = relative.to_str() {
+                if let Ok(relative) = path.strip_prefix(repo_path)
+                    && let Some(rel_str) = relative.to_str() {
                         all_files.push(rel_str.to_string());
                     }
-                }
             }
         }
     }
@@ -812,14 +810,13 @@ impl Sampler {
 
                 // 3. Checkout default branch with force to discard any uncommitted changes
                 repo.git_og(&["checkout", "-f", &default_branch])
-                    .expect(&format!("Checkout {} should succeed", default_branch));
+                    .unwrap_or_else(|_| panic!("Checkout {} should succeed", default_branch));
 
                 // 4. Delete the old test branch if it was a test-bench branch
-                if let Some(branch) = current_branch {
-                    if branch.starts_with("test-bench/") {
+                if let Some(branch) = current_branch
+                    && branch.starts_with("test-bench/") {
                         let _ = repo.git_og(&["branch", "-D", &branch]);
                     }
-                }
 
                 // 5. Create a new branch with timestamp for isolation
                 let timestamp_nanos = SystemTime::now()

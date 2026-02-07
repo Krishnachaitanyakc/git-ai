@@ -4,13 +4,21 @@ use crate::authorship::authorship_log_serialization::AuthorshipLog;
 use crate::authorship::rebase_authorship::rewrite_authorship_if_needed;
 use crate::config;
 use crate::error::GitAiError;
+#[cfg(windows)]
+use crate::utils::is_interactive_terminal;
 use crate::git::refs::get_authorship;
 use crate::git::repo_storage::RepoStorage;
 use crate::git::rewrite_log::RewriteLogEvent;
 use crate::git::sync_authorship::{fetch_authorship_notes, push_authorship_notes};
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+#[cfg(windows)]
+use crate::utils::CREATE_NO_WINDOW;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 pub struct Object<'a> {
     repo: &'a Repository,
@@ -49,6 +57,7 @@ pub struct CommitRange<'a> {
 
 impl<'a> CommitRange<'a> {
     /// Create an empty CommitRange with no commits in its iterator.
+    #[allow(dead_code)]
     pub fn empty(repo: &'a Repository) -> Self {
         Self {
             repo,
@@ -523,12 +532,12 @@ impl<'a> Commit<'a> {
     #[allow(dead_code)]
     pub fn authorship(&self) -> &AuthorshipLog {
         self.authorship_log.get_or_init(|| {
-            get_authorship(self.repo, self.oid.as_str()).unwrap_or_else(|| AuthorshipLog::new())
+            get_authorship(self.repo, self.oid.as_str()).unwrap_or_default()
         })
     }
     #[allow(dead_code)]
     pub fn authorship_uncached(&self) -> AuthorshipLog {
-        get_authorship(self.repo, self.oid.as_str()).unwrap_or_else(|| AuthorshipLog::new())
+        get_authorship(self.repo, self.oid.as_str()).unwrap_or_default()
     }
 
     /// Find the first parent that exists on the specified refname
@@ -635,6 +644,7 @@ impl<'a> Tree<'a> {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::should_implement_trait)]
     pub fn clone(&self) -> Tree<'a> {
         Tree {
             repo: self.repo,
@@ -878,14 +888,13 @@ impl Repository {
         }
 
         // Safely handle empty repositories
-        if let Ok(head_ref) = self.head() {
-            if let Ok(target) = head_ref.target() {
+        if let Ok(head_ref) = self.head()
+            && let Ok(target) = head_ref.target() {
                 let target_string = target;
                 let refname = head_ref.name().map(|n| n.to_string());
                 self.pre_command_base_commit = Some(target_string);
                 self.pre_command_refname = refname;
             }
-        }
     }
 
     pub fn handle_rewrite_log_event(
@@ -898,21 +907,16 @@ impl Repository {
         let log = self
             .storage
             .append_rewrite_event(rewrite_log_event.clone())
-            .ok()
             .expect("Error writing .git/ai/rewrite_log");
 
-        if apply_side_effects {
-            match rewrite_authorship_if_needed(
+        if apply_side_effects
+            && let Ok(_) = rewrite_authorship_if_needed(
                 self,
                 &rewrite_log_event,
                 commit_author,
                 &log,
                 supress_output,
-            ) {
-                Ok(_) => (),
-                Err(_) => {}
-            }
-        }
+            ) {  }
     }
 
     // Internal util to get the git object type for a given OID
@@ -1051,6 +1055,11 @@ impl Repository {
     }
 
     /// Get all config values matching a regex pattern.
+    ///
+    /// Regular expression matching is currently case-sensitive
+    /// and done against a canonicalized version of the key
+    /// in which section and variable names are lowercased, but subsection names are not.
+    ///
     /// Returns a HashMap of key -> value for all matching config entries.
     pub fn config_get_regexp(
         &self,
@@ -1077,13 +1086,12 @@ impl Repository {
                             format!("{}.{}", section_name, value_name_str)
                         };
 
-                        if re.is_match(&full_key) {
-                            if let Some(value) =
+                        if re.is_match(&full_key)
+                            && let Some(value) =
                                 section.body().value(value_name).map(|c| c.to_string())
                             {
                                 matches.insert(full_key, value);
                             }
-                        }
                     }
                 }
                 Ok(matches)
@@ -1212,7 +1220,7 @@ impl Repository {
         &self,
         branch_refname: &str,
         merge_target_refname: &str,
-    ) -> Result<CommitRange, GitAiError> {
+    ) -> Result<CommitRange<'_>, GitAiError> {
         // Normalize the provided branch ref to fully qualified using rev-parse
         let fq_branch = {
             let mut rp_args = self.global_args_for_exec();
@@ -1308,12 +1316,12 @@ impl Repository {
         let first_commit = commits.first().unwrap().to_string();
         let last_commit = commits.last().unwrap().to_string();
 
-        Ok(CommitRange::new(
+        CommitRange::new(
             self,
             first_commit,
             last_commit,
             fq_branch.to_string(),
-        )?)
+        )
     }
 
     // Create new commit in the repository If the update_ref is not None, name of the reference that will be updated to point to this commit. If the reference is not direct, it will be resolved to a direct reference. Use "HEAD" to update the HEAD of the current branch and make it point to this commit. If the reference doesn't exist yet, it will be created. If it does exist, the first parent must be the tip of this branch.
@@ -1358,13 +1366,14 @@ impl Repository {
         let committer_date = fmt_git_date(committer.when());
 
         // Build env for commit-tree
-        let mut env: Vec<(String, String)> = Vec::new();
-        env.push(("GIT_AUTHOR_NAME".to_string(), author_name));
-        env.push(("GIT_AUTHOR_EMAIL".to_string(), author_email));
-        env.push(("GIT_AUTHOR_DATE".to_string(), author_date));
-        env.push(("GIT_COMMITTER_NAME".to_string(), committer_name));
-        env.push(("GIT_COMMITTER_EMAIL".to_string(), committer_email));
-        env.push(("GIT_COMMITTER_DATE".to_string(), committer_date));
+        let env: Vec<(String, String)> = vec![
+            ("GIT_AUTHOR_NAME".to_string(), author_name),
+            ("GIT_AUTHOR_EMAIL".to_string(), author_email),
+            ("GIT_AUTHOR_DATE".to_string(), author_date),
+            ("GIT_COMMITTER_NAME".to_string(), committer_name),
+            ("GIT_COMMITTER_EMAIL".to_string(), committer_email),
+            ("GIT_COMMITTER_DATE".to_string(), committer_date),
+        ];
 
         // 1) Create the commit object via commit-tree, piping message on stdin
         let mut ct_args = self.global_args_for_exec();
@@ -1453,29 +1462,28 @@ impl Repository {
     // Non-standard method of getting a 'default' remote
     pub fn get_default_remote(&self) -> Result<Option<String>, GitAiError> {
         let remotes = self.remotes()?;
-        if remotes.len() == 0 {
+        if remotes.is_empty() {
             return Ok(None);
         }
         // Prefer 'origin' if it exists
         for i in 0..remotes.len() {
-            if let Some(name) = remotes.get(i) {
-                if name == "origin" {
+            if let Some(name) = remotes.get(i)
+                && name == "origin" {
                     return Ok(Some("origin".to_string()));
                 }
-            }
         }
         // Otherwise, just use the first remote
-        Ok(remotes.get(0).map(|s| s.to_string()))
+        Ok(remotes.first().map(|s| s.to_string()))
     }
 
     #[allow(dead_code)]
-    pub fn fetch_authorship<'a>(&'a self, remote_name: &str) -> Result<(), GitAiError> {
+    pub fn fetch_authorship(&self, remote_name: &str) -> Result<(), GitAiError> {
         // Discards whether notes were found or not, just returns success/error
         fetch_authorship_notes(self, remote_name).map(|_| ())
     }
 
     #[allow(dead_code)]
-    pub fn push_authorship<'a>(&'a self, remote_name: &str) -> Result<(), GitAiError> {
+    pub fn push_authorship(&self, remote_name: &str) -> Result<(), GitAiError> {
         push_authorship_notes(self, remote_name)
     }
 
@@ -1810,6 +1818,7 @@ impl Repository {
     ///
     /// Returns (all_added_lines, pure_insertion_lines)
     /// Pure insertions are lines that were added without modifying existing lines at that position.
+    #[allow(clippy::type_complexity)]
     pub fn diff_workdir_added_lines_with_insertions(
         &self,
         from_ref: &str,
@@ -1850,8 +1859,8 @@ impl Repository {
     }
 }
 
-pub fn find_repository(global_args: &Vec<String>) -> Result<Repository, GitAiError> {
-    let mut args = global_args.clone();
+pub fn find_repository(global_args: &[String]) -> Result<Repository, GitAiError> {
+    let mut args = global_args.to_owned();
     args.push("rev-parse".to_string());
     // Use --git-dir instead of --absolute-git-dir for compatibility with Git < 2.13
     // (--absolute-git-dir was added in Git 2.13; older versions output the literal
@@ -1897,7 +1906,7 @@ pub fn find_repository(global_args: &Vec<String>) -> Result<Repository, GitAiErr
 
     // Ensure all internal git commands use the repository root consistently
     // When running from a subdirectory without -C, add it to ensure hooks work correctly
-    let mut global_args = global_args.clone();
+    let mut global_args = global_args.to_owned();
     let workdir_str = workdir.display().to_string();
 
     if global_args.is_empty() {
@@ -1920,7 +1929,7 @@ pub fn find_repository(global_args: &Vec<String>) -> Result<Repository, GitAiErr
     })?;
 
     Ok(Repository {
-        global_args: global_args.clone(),
+        global_args,
         storage: RepoStorage::for_repo_path(&git_dir, &workdir),
         git_dir,
         pre_command_base_commit: None,
@@ -1955,7 +1964,7 @@ pub fn from_bare_repository(git_dir: &Path) -> Result<Repository, GitAiError> {
 
 pub fn find_repository_in_path(path: &str) -> Result<Repository, GitAiError> {
     let global_args = vec!["-C".to_string(), path.to_string()];
-    return find_repository(&global_args);
+    find_repository(&global_args)
 }
 
 /// Find the git repository that contains the given file path by walking up the directory tree.
@@ -1964,9 +1973,9 @@ pub fn find_repository_in_path(path: &str) -> Result<Repository, GitAiError> {
 /// root itself may not be a git repository, but contains multiple independent git repositories.
 ///
 /// # Arguments
-/// * `file_path` - Absolute path to a file
-/// * `workspace_root` - Optional workspace root path. If provided, the search will stop at this
-///                      boundary to avoid finding repositories outside the workspace.
+///  * `file_path` - Absolute path to a file
+///  * `workspace_root` - Optional workspace root path. If provided, the search will stop at this
+///    boundary to avoid finding repositories outside the workspace.
 ///
 /// # Returns
 /// * `Ok(Repository)` - The repository containing the file
@@ -2017,13 +2026,12 @@ pub fn find_repository_for_file(
             // Submodules have a .git file (not directory) that points to the parent's .git/modules
             if git_path.is_file() {
                 // This is a submodule - read the file to check if it points to modules/
-                if let Ok(content) = std::fs::read_to_string(&git_path) {
-                    if content.contains("gitdir:") && content.contains("/modules/") {
+                if let Ok(content) = std::fs::read_to_string(&git_path)
+                    && content.contains("gitdir:") && content.contains("/modules/") {
                         // This is a submodule, skip it and continue searching up
                         current_dir = dir.parent();
                         continue;
                     }
-                }
             }
 
             // Found a real git repository, use find_repository_in_path
@@ -2052,6 +2060,7 @@ pub fn find_repository_for_file(
 /// A tuple of:
 /// * `HashMap<PathBuf, (Repository, Vec<String>)>` - Map of repo root to (repo, file paths)
 /// * `Vec<String>` - Files that couldn't be associated with any repository
+#[allow(clippy::type_complexity)]
 pub fn group_files_by_repository(
     file_paths: &[String],
     workspace_root: Option<&str>,
@@ -2088,10 +2097,17 @@ pub fn group_files_by_repository(
 /// Helper to execute a git command
 pub fn exec_git(args: &[String]) -> Result<Output, GitAiError> {
     // TODO Make sure to handle process signals, etc.
-    let output = Command::new(config::Config::get().git_cmd())
-        .args(args)
-        .output()
-        .map_err(GitAiError::IoError)?;
+    let mut cmd = Command::new(config::Config::get().git_cmd());
+    cmd.args(args);
+
+    #[cfg(windows)]
+    {
+        if !is_interactive_terminal() {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+    }
+
+    let output = cmd.output().map_err(GitAiError::IoError)?;
 
     if !output.status.success() {
         let code = output.status.code();
@@ -2109,13 +2125,20 @@ pub fn exec_git(args: &[String]) -> Result<Output, GitAiError> {
 /// Helper to execute a git command with data provided on stdin
 pub fn exec_git_stdin(args: &[String], stdin_data: &[u8]) -> Result<Output, GitAiError> {
     // TODO Make sure to handle process signals, etc.
-    let mut child = Command::new(config::Config::get().git_cmd())
-        .args(args)
+    let mut cmd = Command::new(config::Config::get().git_cmd());
+    cmd.args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(GitAiError::IoError)?;
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        if !is_interactive_terminal() {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+    }
+
+    let mut child = cmd.spawn().map_err(GitAiError::IoError)?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
@@ -2143,7 +2166,7 @@ pub fn exec_git_stdin(args: &[String], stdin_data: &[u8]) -> Result<Output, GitA
 #[allow(dead_code)]
 pub fn exec_git_stdin_with_env(
     args: &[String],
-    env: &Vec<(String, String)>,
+    env: &[(String, String)],
     stdin_data: &[u8],
 ) -> Result<Output, GitAiError> {
     // TODO Make sure to handle process signals, etc.
@@ -2156,6 +2179,13 @@ pub fn exec_git_stdin_with_env(
     // Apply env overrides
     for (k, v) in env.iter() {
         cmd.env(k, v);
+    }
+
+    #[cfg(windows)]
+    {
+        if !is_interactive_terminal() {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
     }
 
     let mut child = cmd.spawn().map_err(GitAiError::IoError)?;
@@ -2222,40 +2252,43 @@ fn parse_diff_added_lines(diff_output: &str) -> Result<HashMap<String, Vec<u32>>
     for line in diff_output.lines() {
         // Track current file being diffed
         // Git outputs paths in two formats:
-        // 1. Unquoted: +++ b/path/to/file.txt
+        // 1. Unquoted: +++ b/path/to/file.txt (or w/ for workdir diffs)
         // 2. Quoted (for non-ASCII): +++ "b/path/to/file.txt" (with octal escapes inside)
-        if line.starts_with("+++ b/") {
+        if let Some(raw_path) = line.strip_prefix("+++ b/") {
             // Unquoted path (ASCII only)
             // Note: Git adds trailing tab after filenames with spaces, so we trim_end
-            let raw_path = &line[6..].trim_end();
-            let file_path = crate::utils::unescape_git_path(raw_path);
+            let file_path = crate::utils::unescape_git_path(raw_path.trim_end());
             current_file = Some(file_path);
-        } else if line.starts_with("+++ \"b/") {
-            // Quoted path (non-ASCII chars) - extract the quoted portion and unescape
-            // Format: +++ "b/\344\270\255\346\226\207.txt"
-            // We need to extract "b/\344\270\255\346\226\207.txt" and then strip the "b/" after unescaping
-            let quoted_path = &line[4..]; // Gets "b/\344\270\255\346\226\207.txt"
-            let unescaped = crate::utils::unescape_git_path(quoted_path);
-            // Now unescaped is "b/中文.txt", strip the "b/" prefix
-            let file_path = if unescaped.starts_with("b/") {
-                unescaped[2..].to_string()
-            } else {
-                unescaped
-            };
+        } else if let Some(raw_path) = line.strip_prefix("+++ w/") {
+            // Workdir diff uses w/ prefix instead of b/
+            let file_path = crate::utils::unescape_git_path(raw_path.trim_end());
             current_file = Some(file_path);
+        } else if line.starts_with("+++ \"") {
+            // Quoted path (non-ASCII chars) - unescape the entire quoted portion after "+++ "
+            if let Some(quoted_suffix) = line.strip_prefix("+++ ") {
+                let unescaped = crate::utils::unescape_git_path(quoted_suffix);
+                // Strip the prefix (b/ or w/) after unescaping
+                let file_path = if let Some(stripped) =
+                    unescaped.strip_prefix("b/").or(unescaped.strip_prefix("w/"))
+                {
+                    stripped.to_string()
+                } else {
+                    unescaped
+                };
+                current_file = Some(file_path);
+            }
         } else if line.starts_with("+++ /dev/null") {
             // File was deleted
             current_file = None;
         } else if line.starts_with("@@ ") {
             // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-            if let Some(ref file) = current_file {
-                if let Some((added_lines, _is_pure_insertion)) = parse_hunk_header(line) {
+            if let Some(ref file) = current_file
+                && let Some((added_lines, _is_pure_insertion)) = parse_hunk_header(line) {
                     result
                         .entry(file.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .extend(added_lines);
                 }
-            }
         }
     }
 
@@ -2272,6 +2305,7 @@ fn parse_diff_added_lines(diff_output: &str) -> Result<HashMap<String, Vec<u32>>
 /// along with information about which are pure insertions (old_count=0).
 ///
 /// Returns (all_added_lines, pure_insertion_lines)
+#[allow(clippy::type_complexity)]
 fn parse_diff_added_lines_with_insertions(
     diff_output: &str,
 ) -> Result<(HashMap<String, Vec<u32>>, HashMap<String, Vec<u32>>), GitAiError> {
@@ -2282,47 +2316,50 @@ fn parse_diff_added_lines_with_insertions(
     for line in diff_output.lines() {
         // Track current file being diffed
         // Git outputs paths in two formats:
-        // 1. Unquoted: +++ b/path/to/file.txt
+        // 1. Unquoted: +++ b/path/to/file.txt (or w/ for workdir diffs)
         // 2. Quoted (for non-ASCII): +++ "b/path/to/file.txt" (with octal escapes inside)
-        if line.starts_with("+++ b/") {
+        if let Some(raw_path) = line.strip_prefix("+++ b/") {
             // Unquoted path (ASCII only)
             // Note: Git adds trailing tab after filenames with spaces, so we trim_end
-            let raw_path = &line[6..].trim_end();
-            let file_path = crate::utils::unescape_git_path(raw_path);
+            let file_path = crate::utils::unescape_git_path(raw_path.trim_end());
             current_file = Some(file_path);
-        } else if line.starts_with("+++ \"b/") {
-            // Quoted path (non-ASCII chars) - extract the quoted portion and unescape
-            // Format: +++ "b/\344\270\255\346\226\207.txt"
-            // We need to extract "b/\344\270\255\346\226\207.txt" and then strip the "b/" after unescaping
-            let quoted_path = &line[4..]; // Gets "b/\344\270\255\346\226\207.txt"
-            let unescaped = crate::utils::unescape_git_path(quoted_path);
-            // Now unescaped is "b/中文.txt", strip the "b/" prefix
-            let file_path = if unescaped.starts_with("b/") {
-                unescaped[2..].to_string()
-            } else {
-                unescaped
-            };
+        } else if let Some(raw_path) = line.strip_prefix("+++ w/") {
+            // Workdir diff uses w/ prefix instead of b/
+            let file_path = crate::utils::unescape_git_path(raw_path.trim_end());
             current_file = Some(file_path);
+        } else if line.starts_with("+++ \"") {
+            // Quoted path (non-ASCII chars) - unescape the entire quoted portion after "+++ "
+            if let Some(quoted_suffix) = line.strip_prefix("+++ ") {
+                let unescaped = crate::utils::unescape_git_path(quoted_suffix);
+                // Strip the prefix (b/ or w/) after unescaping
+                let file_path = if let Some(stripped) =
+                    unescaped.strip_prefix("b/").or(unescaped.strip_prefix("w/"))
+                {
+                    stripped.to_string()
+                } else {
+                    unescaped
+                };
+                current_file = Some(file_path);
+            }
         } else if line.starts_with("+++ /dev/null") {
             // File was deleted
             current_file = None;
         } else if line.starts_with("@@ ") {
             // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-            if let Some(ref file) = current_file {
-                if let Some((added_lines, is_pure_insertion)) = parse_hunk_header(line) {
+            if let Some(ref file) = current_file
+                && let Some((added_lines, is_pure_insertion)) = parse_hunk_header(line) {
                     all_lines
                         .entry(file.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .extend(added_lines.clone());
 
                     if is_pure_insertion {
                         insertion_lines
                             .entry(file.clone())
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .extend(added_lines);
                     }
                 }
-            }
         }
     }
 
@@ -2486,5 +2523,70 @@ mod tests {
             chinese_filename,
             files
         );
+    }
+
+    #[test]
+    fn test_parse_diff_added_lines_with_insertions_standard_prefix() {
+        // Test diff with standard b/ prefix (commit-to-commit diff)
+        let diff = r#"diff --git a/test.txt b/test.txt
+index 0000000..abc1234 100644
+--- a/test.txt
++++ b/test.txt
+@@ -0,0 +1,2 @@
++line 1
++line 2"#;
+
+        let (added_lines, insertion_lines) = parse_diff_added_lines_with_insertions(diff).unwrap();
+        assert_eq!(added_lines.get("test.txt"), Some(&vec![1, 2]));
+        assert_eq!(insertion_lines.get("test.txt"), Some(&vec![1, 2]));
+    }
+
+    #[test]
+    fn test_parse_diff_added_lines_with_insertions_workdir_prefix() {
+        // Test diff with w/ prefix (commit-to-workdir diff)
+        let diff = r#"diff --git c/test.txt w/test.txt
+index a751413..8adaa6c 100644
+--- c/test.txt
++++ w/test.txt
+@@ -0,0 +1,2 @@
++// AI added line 1
++// AI added line 2"#;
+
+        let (added_lines, insertion_lines) = parse_diff_added_lines_with_insertions(diff).unwrap();
+        assert_eq!(added_lines.get("test.txt"), Some(&vec![1, 2]));
+        assert_eq!(insertion_lines.get("test.txt"), Some(&vec![1, 2]));
+    }
+
+    #[test]
+    fn test_parse_diff_added_lines_with_insertions_quoted_paths() {
+        // Test diff with quoted paths containing spaces
+        let diff = r#"diff --git "a/my file.txt" "b/my file.txt"
+index 0000000..abc1234 100644
+--- "a/my file.txt"
++++ "b/my file.txt"
+@@ -0,0 +1,3 @@
++line 1
++line 2
++line 3"#;
+
+        let (added_lines, insertion_lines) = parse_diff_added_lines_with_insertions(diff).unwrap();
+        assert_eq!(added_lines.get("my file.txt"), Some(&vec![1, 2, 3]));
+        assert_eq!(insertion_lines.get("my file.txt"), Some(&vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_parse_diff_added_lines_with_insertions_quoted_workdir_paths() {
+        // Test diff with quoted w/ paths
+        let diff = r#"diff --git "c/my file.txt" "w/my file.txt"
+index 0000000..abc1234 100644
+--- "c/my file.txt"
++++ "w/my file.txt"
+@@ -0,0 +1,2 @@
++line 1
++line 2"#;
+
+        let (added_lines, insertion_lines) = parse_diff_added_lines_with_insertions(diff).unwrap();
+        assert_eq!(added_lines.get("my file.txt"), Some(&vec![1, 2]));
+        assert_eq!(insertion_lines.get("my file.txt"), Some(&vec![1, 2]));
     }
 }

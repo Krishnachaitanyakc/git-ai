@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use git_ai::authorship::authorship_log_serialization::AuthorshipLog;
 use git_ai::authorship::stats::CommitStats;
 use git_ai::config::ConfigPatch;
@@ -22,6 +24,13 @@ pub struct TestRepo {
     pub feature_flags: FeatureFlags,
     pub(crate) config_patch: Option<ConfigPatch>,
     test_db_path: PathBuf,
+}
+
+#[allow(dead_code)]
+impl Default for TestRepo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestRepo {
@@ -235,11 +244,11 @@ impl TestRepo {
     }
 
     pub fn git_ai(&self, args: &[&str]) -> Result<String, String> {
-        return self.git_ai_with_env(args, &[]);
+        self.git_ai_with_env(args, &[])
     }
 
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
-        return self.git_with_env(args, &[], None);
+        self.git_with_env(args, &[], None)
     }
 
     /// Run a git command from a working directory (without using -C flag)
@@ -350,11 +359,10 @@ impl TestRepo {
         command.env("GIT_AI", "git");
 
         // Add config patch as environment variable if present
-        if let Some(patch) = &self.config_patch {
-            if let Ok(patch_json) = serde_json::to_string(patch) {
+        if let Some(patch) = &self.config_patch
+            && let Ok(patch_json) = serde_json::to_string(patch) {
                 command.env("GIT_AI_TEST_CONFIG_PATCH", patch_json);
             }
-        }
 
         // Add test database path for isolation
         command.env("GIT_AI_TEST_DB_PATH", self.test_db_path.to_str().unwrap());
@@ -364,10 +372,8 @@ impl TestRepo {
             command.env(key, value);
         }
 
-        let output = command.output().expect(&format!(
-            "Failed to execute git command with env: {:?}",
-            args
-        ));
+        let output = command.output().unwrap_or_else(|_| panic!("Failed to execute git command with env: {:?}",
+            args));
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -394,11 +400,10 @@ impl TestRepo {
         command.args(args).current_dir(&self.path);
 
         // Add config patch as environment variable if present
-        if let Some(patch) = &self.config_patch {
-            if let Ok(patch_json) = serde_json::to_string(patch) {
+        if let Some(patch) = &self.config_patch
+            && let Ok(patch_json) = serde_json::to_string(patch) {
                 command.env("GIT_AI_TEST_CONFIG_PATCH", patch_json);
             }
-        }
 
         // Add test database path for isolation
         command.env("GIT_AI_TEST_DB_PATH", self.test_db_path.to_str().unwrap());
@@ -410,7 +415,7 @@ impl TestRepo {
 
         let output = command
             .output()
-            .expect(&format!("Failed to execute git-ai command: {:?}", args));
+            .unwrap_or_else(|_| panic!("Failed to execute git-ai command: {:?}", args));
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -446,15 +451,14 @@ impl TestRepo {
             .stderr(Stdio::piped());
 
         // Add config patch as environment variable if present
-        if let Some(patch) = &self.config_patch {
-            if let Ok(patch_json) = serde_json::to_string(patch) {
+        if let Some(patch) = &self.config_patch
+            && let Ok(patch_json) = serde_json::to_string(patch) {
                 command.env("GIT_AI_TEST_CONFIG_PATCH", patch_json);
             }
-        }
 
         let mut child = command
             .spawn()
-            .expect(&format!("Failed to spawn git-ai command: {:?}", args));
+            .unwrap_or_else(|_| panic!("Failed to spawn git-ai command: {:?}", args));
 
         // Write stdin data
         if let Some(mut stdin) = child.stdin.take() {
@@ -465,7 +469,7 @@ impl TestRepo {
 
         let output = child
             .wait_with_output()
-            .expect(&format!("Failed to wait for git-ai command: {:?}", args));
+            .unwrap_or_else(|_| panic!("Failed to wait for git-ai command: {:?}", args));
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -485,7 +489,7 @@ impl TestRepo {
         }
     }
 
-    pub fn filename(&self, filename: &str) -> TestFile {
+    pub fn filename(&self, filename: &str) -> TestFile<'_> {
         let file_path = self.path.join(filename);
 
         // If file exists, populate from existing file with blame
@@ -513,7 +517,7 @@ impl TestRepo {
     }
 
     pub fn commit(&self, message: &str) -> Result<NewCommit, String> {
-        return self.commit_with_env(message, &[], None);
+        self.commit_with_env(message, &[], None)
     }
 
     /// Commit from a working directory (without using -C flag)
@@ -541,36 +545,35 @@ impl TestRepo {
         let output = self.git_with_env(&["commit", "-m", message], envs, working_dir);
 
         // println!("commit output: {:?}", output);
-        if output.is_ok() {
-            let combined = output.unwrap();
+        match output {
+            Ok(combined) => {
+                // Get the repository and HEAD commit SHA
+                let repo = GitAiRepository::find_repository_in_path(self.path.to_str().unwrap())
+                    .map_err(|e| format!("Failed to find repository: {}", e))?;
 
-            // Get the repository and HEAD commit SHA
-            let repo = GitAiRepository::find_repository_in_path(self.path.to_str().unwrap())
-                .map_err(|e| format!("Failed to find repository: {}", e))?;
+                let head_commit = repo
+                    .head()
+                    .map_err(|e| format!("Failed to get HEAD: {}", e))?
+                    .target()
+                    .map_err(|e| format!("Failed to get HEAD target: {}", e))?;
 
-            let head_commit = repo
-                .head()
-                .map_err(|e| format!("Failed to get HEAD: {}", e))?
-                .target()
-                .map_err(|e| format!("Failed to get HEAD target: {}", e))?;
+                // Get the authorship log for the new commit
+                let authorship_log =
+                    match git_ai::git::refs::show_authorship_note(&repo, &head_commit) {
+                        Some(content) => AuthorshipLog::deserialize_from_string(&content)
+                            .map_err(|e| format!("Failed to parse authorship log: {}", e))?,
+                        None => {
+                            return Err("No authorship log found for the new commit".to_string());
+                        }
+                    };
 
-            // Get the authorship log for the new commit
-            let authorship_log = match git_ai::git::refs::show_authorship_note(&repo, &head_commit)
-            {
-                Some(content) => AuthorshipLog::deserialize_from_string(&content)
-                    .map_err(|e| format!("Failed to parse authorship log: {}", e))?,
-                None => {
-                    return Err("No authorship log found for the new commit".to_string());
-                }
-            };
-
-            Ok(NewCommit {
-                commit_sha: head_commit,
-                authorship_log,
-                stdout: combined,
-            })
-        } else {
-            Err(output.unwrap_err())
+                Ok(NewCommit {
+                    commit_sha: head_commit,
+                    authorship_log,
+                    stdout: combined,
+                })
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -631,7 +634,7 @@ fn compile_binary() -> PathBuf {
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let output = Command::new("cargo")
-        .args(&["build", "--bin", "git-ai", "--features", "test-support"])
+        .args(["build", "--bin", "git-ai", "--features", "test-support"])
         .current_dir(manifest_dir)
         .output()
         .expect("Failed to compile git-ai binary");
@@ -644,8 +647,10 @@ fn compile_binary() -> PathBuf {
         );
     }
 
-    let binary_path = PathBuf::from(manifest_dir).join("target/debug/git-ai");
-    binary_path
+    // Respect CARGO_TARGET_DIR if set, otherwise fall back to manifest-relative target/
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| PathBuf::from(manifest_dir).join("target").to_string_lossy().into_owned());
+    PathBuf::from(target_dir).join("debug/git-ai")
 }
 
 pub(crate) fn get_binary_path() -> &'static PathBuf {

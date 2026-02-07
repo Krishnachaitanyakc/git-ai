@@ -9,8 +9,6 @@ use git_ai::authorship::working_log::AgentId;
 use git_ai::commands::blame::GitAiBlameOptions;
 use git_ai::git::refs::notes_add;
 use git_ai::git::repository as GitAiRepository;
-use git2::Blame;
-use insta::assert_debug_snapshot;
 use repos::test_file::ExpectedLineExt;
 use repos::test_repo::TestRepo;
 
@@ -22,11 +20,7 @@ fn extract_authors(output: &str) -> Vec<String> {
             // Extract author name from blame line format
             // Format: sha (author date line) code
             if let Some(start) = line.find('(') {
-                if let Some(end) = line[start..].find(' ') {
-                    Some(line[start + 1..start + end].trim().to_string())
-                } else {
-                    None
-                }
+                line[start..].find(' ').map(|end| line[start + 1..start + end].trim().to_string())
             } else {
                 None
             }
@@ -78,8 +72,8 @@ fn normalize_for_snapshot(output: &str) -> String {
         })
         .map(|line| {
             // Remove the ^ prefix that git adds for boundary commits
-            if line.starts_with('^') {
-                line[1..].to_string()
+            if let Some(stripped) = line.strip_prefix('^') {
+                stripped.to_string()
             } else {
                 line
             }
@@ -914,7 +908,7 @@ fn test_blame_explicit_ignore_revs_file_takes_precedence() {
     file.set_contents(lines!["Line 1"]);
     repo.stage_all_and_commit("Initial commit").unwrap();
 
-    let initial_sha = repo.git(&["rev-parse", "HEAD"]).unwrap().trim().to_string();
+    let _initial_sha = repo.git(&["rev-parse", "HEAD"]).unwrap().trim().to_string();
 
     // Create second commit
     file.set_contents(lines!["Line 1 modified"]);

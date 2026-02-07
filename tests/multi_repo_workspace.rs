@@ -48,7 +48,7 @@ fn init_git_repo(path: &PathBuf) -> Result<(), GitAiError> {
 
     let output = Command::new("git")
         .current_dir(path)
-        .args(&["init"])
+        .args(["init"])
         .output()
         .map_err(|e| GitAiError::Generic(format!("Failed to run git init: {}", e)))?;
 
@@ -62,13 +62,13 @@ fn init_git_repo(path: &PathBuf) -> Result<(), GitAiError> {
     // Configure user for the repository
     Command::new("git")
         .current_dir(path)
-        .args(&["config", "user.name", "Test User"])
+        .args(["config", "user.name", "Test User"])
         .output()
         .ok();
 
     Command::new("git")
         .current_dir(path)
-        .args(&["config", "user.email", "test@example.com"])
+        .args(["config", "user.email", "test@example.com"])
         .output()
         .ok();
 
@@ -143,13 +143,13 @@ fn test_nonexistent_file_path() {
         nonexistent_file.to_str().unwrap().to_string(),
     ];
 
-    let (repo_files, orphan_files) = group_files_by_repository(
+    let (repo_files, _orphan_files) = group_files_by_repository(
         &file_paths,
         Some(workspace.to_str().unwrap()),
     );
 
     // The real file should be found in the repo
-    // The nonexistent file behavior depends on implementation - 
+    // The nonexistent file behavior depends on implementation -
     // it should still find the repo since the parent directory exists
     assert!(!repo_files.is_empty(), "Should find repository for existing file");
 
@@ -307,7 +307,7 @@ fn test_bare_repository_handling() {
 
     let output = Command::new("git")
         .current_dir(&bare_repo)
-        .args(&["init", "--bare"])
+        .args(["init", "--bare"])
         .output();
 
     if output.is_ok() && output.unwrap().status.success() {
@@ -356,7 +356,7 @@ fn test_duplicate_files_same_repo() {
     assert!(orphan_files.is_empty(), "No orphan files");
 
     // The duplicate should be included twice in the file list
-    for (_workdir, (_repo, files)) in &repo_files {
+    for (_repo, files) in repo_files.values() {
         assert_eq!(files.len(), 2, "Duplicate files should both be in the list");
     }
 
@@ -610,13 +610,13 @@ fn test_find_repository_in_path_still_works() {
 
     Command::new("git")
         .current_dir(&repo)
-        .args(&["add", "."])
+        .args(["add", "."])
         .output()
         .ok();
 
     Command::new("git")
         .current_dir(&repo)
-        .args(&["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit"])
         .output()
         .ok();
 
@@ -754,10 +754,8 @@ fn test_workspace_relative_paths() {
 
     // Test with workspace-relative paths (simulating what an IDE might send)
     // When paths are relative to workspace root
-    let relative_paths = vec![
-        "my-project/src/main.rs".to_string(),
-        "my-project/lib/utils.rs".to_string(),
-    ];
+    let relative_paths = ["my-project/src/main.rs".to_string(),
+        "my-project/lib/utils.rs".to_string()];
 
     // Convert to absolute paths (simulating what handle_checkpoint does)
     let absolute_paths: Vec<String> = relative_paths
@@ -774,7 +772,7 @@ fn test_workspace_relative_paths() {
     assert!(orphan_files.is_empty(), "Should have no orphan files");
 
     // Verify the files are grouped correctly
-    for (_workdir, (_repo, files)) in &repo_files {
+    for (_repo, files) in repo_files.values() {
         assert_eq!(files.len(), 2, "Should have 2 files in the repo");
     }
 
@@ -844,7 +842,7 @@ fn test_mixed_absolute_and_relative_grouping() {
     assert_eq!(repo_files.len(), 1, "Should detect 1 repository");
     assert!(orphan_files.is_empty(), "Should have no orphans");
 
-    for (_workdir, (_repo, files)) in &repo_files {
+    for (_repo, files) in repo_files.values() {
         assert_eq!(files.len(), 2, "Both files should be in the same repo");
     }
 

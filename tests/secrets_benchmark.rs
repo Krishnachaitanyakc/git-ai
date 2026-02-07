@@ -212,7 +212,7 @@ fn benchmark_is_random(
     for _ in 0..iterations {
         let start = Instant::now();
         for &(start_idx, end_idx) in tokens {
-            let _ = is_random(text[start_idx..end_idx].as_bytes());
+            let _ = is_random(text.as_bytes().get(start_idx..end_idx).unwrap());
         }
         durations.push(start.elapsed());
     }
@@ -231,7 +231,7 @@ fn benchmark_p_random(
     for _ in 0..iterations {
         let start = Instant::now();
         for &(start_idx, end_idx) in tokens {
-            let _ = p_random(text[start_idx..end_idx].as_bytes());
+            let _ = p_random(text.as_bytes().get(start_idx..end_idx).unwrap());
         }
         durations.push(start.elapsed());
     }
@@ -477,7 +477,7 @@ fn test_secrets_linear_scaling() {
     // For O(n) algorithm, ratio should be ~5.0
     // Allow 2.0-8.5 range for variance (cache effects, measurement noise)
     assert!(
-        ratio >= 2.0 && ratio <= 8.5,
+        (2.0..=8.5).contains(&ratio),
         "Expected linear scaling (~5x), but got {:.2}x ratio. \
          1x: {:.2}ms, 5x: {:.2}ms. This suggests non-linear complexity.",
         ratio,
