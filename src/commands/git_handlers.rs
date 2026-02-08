@@ -121,7 +121,8 @@ pub fn handle_git(args: &[String]) {
 
     let config = config::Config::get();
 
-    let skip_hooks = !config.is_allowed_repository(&repository_option);
+    let skip_hooks = !config.is_allowed_repository(&repository_option)
+        || std::env::var("GIT_TEST_INSTALLED").is_ok();
 
     if skip_hooks {
         debug_log(

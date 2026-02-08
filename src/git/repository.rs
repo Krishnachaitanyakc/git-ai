@@ -2094,11 +2094,23 @@ pub fn group_files_by_repository(
     (repo_files, orphan_files)
 }
 
+/// Collect the names of GIT_TRACE* environment variables so internal
+/// git sub-process calls don't pollute the caller's trace output.
+fn git_trace_env_keys() -> Vec<String> {
+    std::env::vars()
+        .filter(|(k, _)| k.starts_with("GIT_TRACE"))
+        .map(|(k, _)| k)
+        .collect()
+}
+
 /// Helper to execute a git command
 pub fn exec_git(args: &[String]) -> Result<Output, GitAiError> {
     // TODO Make sure to handle process signals, etc.
     let mut cmd = Command::new(config::Config::get().git_cmd());
     cmd.args(args);
+    for key in git_trace_env_keys() {
+        cmd.env_remove(&key);
+    }
 
     #[cfg(windows)]
     {
@@ -2130,6 +2142,9 @@ pub fn exec_git_stdin(args: &[String], stdin_data: &[u8]) -> Result<Output, GitA
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    for key in git_trace_env_keys() {
+        cmd.env_remove(&key);
+    }
 
     #[cfg(windows)]
     {
@@ -2175,6 +2190,11 @@ pub fn exec_git_stdin_with_env(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    // Strip GIT_TRACE* to avoid polluting caller's trace output
+    for key in git_trace_env_keys() {
+        cmd.env_remove(&key);
+    }
 
     // Apply env overrides
     for (k, v) in env.iter() {
