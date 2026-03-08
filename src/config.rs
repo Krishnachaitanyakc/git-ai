@@ -699,8 +699,15 @@ pub fn load_custom_attributes() -> HashMap<String, String> {
         .unwrap_or_default();
 
     if let Ok(env_val) = env::var("GIT_AI_CUSTOM_ATTRIBUTES") {
-        if let Ok(env_attrs) = serde_json::from_str::<HashMap<String, String>>(&env_val) {
-            custom_attributes.extend(env_attrs);
+        if let Ok(env_attrs) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&env_val) {
+            for (k, v) in env_attrs {
+                match v {
+                    serde_json::Value::String(s) => { custom_attributes.insert(k, s); }
+                    serde_json::Value::Number(n) => { custom_attributes.insert(k, n.to_string()); }
+                    serde_json::Value::Bool(b) => { custom_attributes.insert(k, b.to_string()); }
+                    _ => {} // silently drop arrays, objects, null
+                }
+            }
         } else {
             crate::utils::debug_log("GIT_AI_CUSTOM_ATTRIBUTES is not valid JSON or contains non-string values, ignoring");
         }
