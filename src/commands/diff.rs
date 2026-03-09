@@ -30,6 +30,7 @@ pub enum DiffFormat {
 #[derive(Debug)]
 pub struct DiffHunk {
     pub file_path: String,
+    pub old_file_path: Option<String>,
     pub old_start: u32,
     pub old_count: u32,
     pub new_start: u32,
@@ -535,7 +536,10 @@ fn parse_diff_hunks(diff_text: &str) -> Result<Vec<DiffHunk>, GitAiError> {
 
         if line.starts_with("@@ ") {
             flush_current_hunk(&mut hunks, &mut current_hunk);
-            if let Some(mut hunk) = parse_hunk_line(line, &current_file)? {
+            let old_file_path = current_old_file
+                .as_deref()
+                .filter(|old_path| *old_path != current_file.as_str());
+            if let Some(mut hunk) = parse_hunk_line(line, &current_file, old_file_path)? {
                 old_line_cursor = hunk.old_start;
                 new_line_cursor = hunk.new_start;
                 hunk.deleted_lines.clear();
@@ -654,7 +658,11 @@ fn parse_two_git_path_tokens(raw: &str) -> Option<(String, String)> {
     }
 }
 
-fn parse_hunk_line(line: &str, file_path: &str) -> Result<Option<DiffHunk>, GitAiError> {
+fn parse_hunk_line(
+    line: &str,
+    file_path: &str,
+    old_file_path: Option<&str>,
+) -> Result<Option<DiffHunk>, GitAiError> {
     // Parse hunk header format: @@ -old_start,old_count +new_start,new_count @@
     // Also handles: @@ -old_start +new_start,new_count @@ (single line deletion)
     // Also handles: @@ -old_start,old_count +new_start @@ (single line addition)
@@ -710,6 +718,7 @@ fn parse_hunk_line(line: &str, file_path: &str) -> Result<Option<DiffHunk>, GitA
 
     Ok(Some(DiffHunk {
         file_path: file_path.to_string(),
+        old_file_path: old_file_path.map(ToString::to_string),
         old_start,
         old_count,
         new_start,
@@ -813,35 +822,32 @@ fn build_line_attribution_data(
     let mut commits: BTreeMap<String, DiffCommitMetadata> = BTreeMap::new();
 
     let added_lines_by_file = collect_lines_by_file(hunks, LineSide::New);
-    let deleted_lines_by_file = collect_lines_by_file(hunks, LineSide::Old);
-    let mut files: HashSet<String> = added_lines_by_file.keys().cloned().collect();
-    files.extend(deleted_lines_by_file.keys().cloned());
+    for (file_path, lines) in &added_lines_by_file {
+        apply_blame_for_side(
+            repo,
+            file_path,
+            file_path,
+            lines,
+            LineSide::New,
+            from_commit,
+            Some(to_commit),
+            None,
+            &mut annotations_by_file,
+            &mut attributions,
+            &mut line_details,
+            &mut prompts,
+            &mut commits,
+        );
+    }
 
-    for file_path in files {
-        if let Some(lines) = added_lines_by_file.get(&file_path) {
+    if options.blame_deletions {
+        let deleted_lines_by_blame_and_result = collect_old_lines_by_blame_and_result(hunks);
+        for ((blame_file_path, result_file_path), lines) in deleted_lines_by_blame_and_result {
             apply_blame_for_side(
                 repo,
-                &file_path,
-                lines,
-                LineSide::New,
-                from_commit,
-                Some(to_commit),
-                None,
-                &mut annotations_by_file,
-                &mut attributions,
-                &mut line_details,
-                &mut prompts,
-                &mut commits,
-            );
-        }
-
-        if options.blame_deletions
-            && let Some(lines) = deleted_lines_by_file.get(&file_path)
-        {
-            apply_blame_for_side(
-                repo,
-                &file_path,
-                lines,
+                &blame_file_path,
+                &result_file_path,
+                &lines,
                 LineSide::Old,
                 from_commit,
                 None,
@@ -867,7 +873,8 @@ fn build_line_attribution_data(
 #[allow(clippy::too_many_arguments)]
 fn apply_blame_for_side(
     repo: &Repository,
-    file_path: &str,
+    blame_file_path: &str,
+    result_file_path: &str,
     lines: &[u32],
     side: LineSide,
     from_commit: &str,
@@ -901,13 +908,13 @@ fn apply_blame_for_side(
         blame_options.oldest_date_spec = oldest_date_spec;
     }
 
-    let analysis = match repo.blame_analysis(file_path, &blame_options) {
+    let analysis = match repo.blame_analysis(blame_file_path, &blame_options) {
         Ok(analysis) => analysis,
         Err(_) => {
             for line in lines {
                 attributions.insert(
                     DiffLineKey {
-                        file: file_path.to_string(),
+                        file: result_file_path.to_string(),
                         line: *line,
                         side: side.clone(),
                     },
@@ -936,7 +943,7 @@ fn apply_blame_for_side(
 
     for line in lines {
         let key = DiffLineKey {
-            file: file_path.to_string(),
+            file: result_file_path.to_string(),
             line: *line,
             side: side.clone(),
         };
@@ -984,7 +991,7 @@ fn apply_blame_for_side(
 
     if matches!(side, LineSide::New) {
         let file_annotations = annotations_by_file
-            .entry(file_path.to_string())
+            .entry(result_file_path.to_string())
             .or_default();
         for (prompt_id, mut prompt_lines) in lines_by_prompt_id {
             prompt_lines.sort_unstable();
@@ -1033,8 +1040,12 @@ fn collect_lines_by_file(hunks: &[DiffHunk], side: LineSide) -> HashMap<String, 
         if lines.is_empty() {
             continue;
         }
+        let key = match side {
+            LineSide::Old => hunk.old_file_path.as_deref().unwrap_or(&hunk.file_path),
+            LineSide::New => &hunk.file_path,
+        };
         lines_by_file
-            .entry(hunk.file_path.clone())
+            .entry(key.to_string())
             .or_default()
             .extend(lines.iter().copied());
     }
@@ -1045,6 +1056,35 @@ fn collect_lines_by_file(hunks: &[DiffHunk], side: LineSide) -> HashMap<String, 
     }
 
     lines_by_file
+}
+
+fn collect_old_lines_by_blame_and_result(
+    hunks: &[DiffHunk],
+) -> HashMap<(String, String), Vec<u32>> {
+    let mut lines_by_file_pair: HashMap<(String, String), Vec<u32>> = HashMap::new();
+
+    for hunk in hunks {
+        if hunk.deleted_lines.is_empty() {
+            continue;
+        }
+
+        let blame_file = hunk
+            .old_file_path
+            .clone()
+            .unwrap_or_else(|| hunk.file_path.clone());
+        let result_file = hunk.file_path.clone();
+        lines_by_file_pair
+            .entry((blame_file, result_file))
+            .or_default()
+            .extend(hunk.deleted_lines.iter().copied());
+    }
+
+    for lines in lines_by_file_pair.values_mut() {
+        lines.sort_unstable();
+        lines.dedup();
+    }
+
+    lines_by_file_pair
 }
 
 fn build_line_content_map(hunks: &[DiffHunk]) -> HashMap<DiffLineKey, String> {
@@ -2052,9 +2092,10 @@ mod tests {
     #[test]
     fn test_parse_hunk_line_basic() {
         let line = "@@ -10,3 +15,5 @@ fn main() {";
-        let result = parse_hunk_line(line, "test.rs").unwrap().unwrap();
+        let result = parse_hunk_line(line, "test.rs", None).unwrap().unwrap();
 
         assert_eq!(result.file_path, "test.rs");
+        assert_eq!(result.old_file_path, None);
         assert_eq!(result.old_start, 10);
         assert_eq!(result.old_count, 3);
         assert_eq!(result.new_start, 15);
@@ -2066,7 +2107,7 @@ mod tests {
     #[test]
     fn test_parse_hunk_line_single_line_deletion() {
         let line = "@@ -10 +10,2 @@ fn main() {";
-        let result = parse_hunk_line(line, "test.rs").unwrap().unwrap();
+        let result = parse_hunk_line(line, "test.rs", None).unwrap().unwrap();
 
         assert_eq!(result.old_start, 10);
         assert_eq!(result.old_count, 1);
@@ -2079,7 +2120,7 @@ mod tests {
     #[test]
     fn test_parse_hunk_line_single_line_addition() {
         let line = "@@ -10,2 +10 @@ fn main() {";
-        let result = parse_hunk_line(line, "test.rs").unwrap().unwrap();
+        let result = parse_hunk_line(line, "test.rs", None).unwrap().unwrap();
 
         assert_eq!(result.old_start, 10);
         assert_eq!(result.old_count, 2);
@@ -2092,7 +2133,7 @@ mod tests {
     #[test]
     fn test_parse_hunk_line_pure_addition() {
         let line = "@@ -0,0 +1,3 @@ fn main() {";
-        let result = parse_hunk_line(line, "test.rs").unwrap().unwrap();
+        let result = parse_hunk_line(line, "test.rs", None).unwrap().unwrap();
 
         assert_eq!(result.old_start, 0);
         assert_eq!(result.old_count, 0);
@@ -2105,7 +2146,7 @@ mod tests {
     #[test]
     fn test_parse_hunk_line_pure_deletion() {
         let line = "@@ -5,3 +0,0 @@ fn main() {";
-        let result = parse_hunk_line(line, "test.rs").unwrap().unwrap();
+        let result = parse_hunk_line(line, "test.rs", None).unwrap().unwrap();
 
         assert_eq!(result.old_start, 5);
         assert_eq!(result.old_count, 3);
@@ -2265,6 +2306,28 @@ index abc123..def456 100644
         let result = parse_diff_hunks(diff_text).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].file_path, "DST/file1.rs");
+        assert_eq!(result[0].old_file_path, Some("SRC/file1.rs".to_string()));
+    }
+
+    #[test]
+    fn test_parse_diff_hunks_rename_tracks_old_file_path() {
+        let diff_text = r#"diff --git a/old_name.txt b/new_name.txt
+similarity index 62%
+rename from old_name.txt
+rename to new_name.txt
+index 7f4f5e8..1c84817 100644
+--- a/old_name.txt
++++ b/new_name.txt
+@@ -1,3 +1,2 @@
+ keep
+-drop-me
+ tail
+"#;
+
+        let result = parse_diff_hunks(diff_text).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].file_path, "new_name.txt");
+        assert_eq!(result[0].old_file_path, Some("old_name.txt".to_string()));
     }
 
     #[test]
@@ -2289,9 +2352,15 @@ index abc123..def456 100644
 
         assert_eq!(result[0].file_path, "query.sql");
         assert_eq!(result[0].deleted_lines, vec![10, 11]);
-        assert_eq!(result[0].deleted_contents, vec!["-- old sql comment", "WHERE id = 1;"]);
+        assert_eq!(
+            result[0].deleted_contents,
+            vec!["-- old sql comment", "WHERE id = 1;"]
+        );
         assert_eq!(result[0].added_lines, vec![10, 11]);
-        assert_eq!(result[0].added_contents, vec!["++ new marker", "WHERE id = 2;"]);
+        assert_eq!(
+            result[0].added_contents,
+            vec!["++ new marker", "WHERE id = 2;"]
+        );
 
         assert_eq!(result[1].file_path, "query.sql");
         assert_eq!(result[1].deleted_lines, vec![30]);
