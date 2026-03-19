@@ -338,11 +338,14 @@ class BlameEditorManager(private val project: Project) : Disposable {
 
     override fun dispose() {
         scheduler.shutdownNow()
-        for ((_, state) in editorStates) {
-            state.clearDecorations()
-            Disposer.dispose(state)
-        }
+        val states = editorStates.values.toList()
         editorStates.clear()
+        // Dispose on EDT to safely clear editor decorations (markup/inlay access requires EDT).
+        ApplicationManager.getApplication().invokeLater {
+            for (state in states) {
+                Disposer.dispose(state)
+            }
+        }
     }
 
     /**
