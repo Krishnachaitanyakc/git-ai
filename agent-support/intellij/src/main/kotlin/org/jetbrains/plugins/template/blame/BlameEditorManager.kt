@@ -110,8 +110,9 @@ class BlameEditorManager(private val project: Project) : Disposable {
         // Listen for file open/close events
         connection.subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
             override fun fileOpened(source: FileEditorManager, file: VirtualFile) {
-                val editor = source.selectedTextEditor ?: return
-                attachToEditor(editor)
+                source.getEditors(file).filterIsInstance<TextEditor>().forEach { textEditor ->
+                    attachToEditor(textEditor.editor)
+                }
             }
 
             override fun fileClosed(source: FileEditorManager, file: VirtualFile) {

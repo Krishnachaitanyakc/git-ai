@@ -83,14 +83,9 @@ class BlameService(private val project: Project) {
                 .redirectErrorStream(false)
                 .start()
 
-            // Write current file content to stdin
-            process.outputStream.bufferedWriter().use { writer ->
-                writer.write(content)
-            }
-
-            // Read stdout/stderr concurrently to avoid pipe buffer deadlock.
-            // If blame output exceeds the OS pipe buffer (~64KB), the child
-            // blocks on write while the parent blocks on waitFor.
+            // Start stdout/stderr readers BEFORE writing stdin to avoid pipe
+            // buffer deadlock. If content or output exceeds ~64KB, the child
+            // blocks on stdout write while the parent blocks on stdin write.
             val stdoutFuture = CompletableFuture.supplyAsync {
                 process.inputStream.bufferedReader().readText().trim()
             }
@@ -98,9 +93,17 @@ class BlameService(private val project: Project) {
                 process.errorStream.bufferedReader().readText().trim()
             }
 
+            // Write stdin asynchronously so all three pipes are drained concurrently
+            val stdinFuture = CompletableFuture.runAsync {
+                process.outputStream.bufferedWriter().use { writer ->
+                    writer.write(content)
+                }
+            }
+
             val completed = process.waitFor(TIMEOUT_MS, TimeUnit.MILLISECONDS)
             if (!completed) {
                 process.destroyForcibly()
+                stdinFuture.cancel(true)
                 stdoutFuture.cancel(true)
                 stderrFuture.cancel(true)
                 logger.warn("git-ai blame timed out for $filePath")
