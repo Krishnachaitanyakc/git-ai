@@ -385,6 +385,7 @@ pub fn handle_acp_proxy(args: &[String]) {
     let mut child = match Command::new(&agent_cmd)
         .args(&agent_args)
         .current_dir(&cwd)
+        .env("GIT_AI_ACP_PROXY", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
