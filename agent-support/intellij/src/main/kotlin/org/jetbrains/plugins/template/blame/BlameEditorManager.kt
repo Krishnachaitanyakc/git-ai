@@ -130,10 +130,9 @@ class BlameEditorManager(private val project: Project) : Disposable {
     }
 
     private fun attachToEditor(editor: Editor) {
-        if (editorStates.containsKey(editor)) return
-
         val state = EditorBlameState(editor)
-        editorStates[editor] = state
+        val existing = editorStates.putIfAbsent(editor, state)
+        if (existing != null) return // already attached by another thread
 
         // Listen for caret changes (for LINE mode)
         editor.caretModel.addCaretListener(object : CaretListener {
@@ -167,6 +166,7 @@ class BlameEditorManager(private val project: Project) : Disposable {
     }
 
     private fun scheduleBlameRefresh(editor: Editor, state: EditorBlameState) {
+        if (blameMode == BlameMode.OFF) return
         state.pendingRefresh?.cancel(false)
         state.pendingRefresh = scheduler.schedule({
             fetchAndDecorate(editor, state)
@@ -324,7 +324,14 @@ class BlameEditorManager(private val project: Project) : Disposable {
         // Refresh all editors
         for ((editor, state) in editorStates) {
             if (!editor.isDisposed) {
-                scheduleBlameRefresh(editor, state)
+                if (blameMode == BlameMode.OFF) {
+                    state.pendingRefresh?.cancel(false)
+                    ApplicationManager.getApplication().invokeLater {
+                        state.clearDecorations()
+                    }
+                } else {
+                    scheduleBlameRefresh(editor, state)
+                }
             }
         }
 
