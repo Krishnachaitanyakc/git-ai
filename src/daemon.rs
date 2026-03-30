@@ -6457,9 +6457,12 @@ impl ActorDaemonCoordinator {
                                 family, applied.seq, error
                             ));
                         }
-                        if let Err(error) =
-                            coord.append_command_completion_log(&family, &applied, &result, applied.seq)
-                        {
+                        if let Err(error) = coord.append_command_completion_log(
+                            &family,
+                            &applied,
+                            &result,
+                            applied.seq,
+                        ) {
                             let _ = coord.record_side_effect_error(&family, applied.seq, &error);
                             debug_log(&format!(
                                 "daemon async completion log write failed for family {} seq {}: {}",
