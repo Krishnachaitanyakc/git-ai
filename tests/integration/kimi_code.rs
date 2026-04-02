@@ -339,8 +339,7 @@ fn test_kimi_code_e2e_checkpoint_and_commit() {
     })
     .to_string();
 
-    let result = repo
-        .git_ai(&["checkpoint", "kimi-code", "--hook-input", &hook_input])
+    repo.git_ai(&["checkpoint", "kimi-code", "--hook-input", &hook_input])
         .expect("checkpoint should succeed");
 
     // Commit the changes
