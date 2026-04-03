@@ -1,5 +1,7 @@
 use crate::error::GitAiError;
-use crate::mdm::hook_installer::{HookCheckResult, HookInstaller, HookInstallerParams};
+use crate::mdm::hook_installer::{
+    HookCheckResult, HookInstaller, HookInstallerParams, InstallResult,
+};
 use crate::mdm::utils::{binary_exists, home_dir};
 use std::fs;
 use std::path::PathBuf;
@@ -94,6 +96,44 @@ Replace "claude" with your preferred agent command if different.
         );
 
         Ok(Some(instructions))
+    }
+
+    fn install_extras(
+        &self,
+        params: &HookInstallerParams,
+        _dry_run: bool,
+    ) -> Result<Vec<InstallResult>, GitAiError> {
+        if !Self::is_zed_installed() {
+            return Ok(vec![]);
+        }
+
+        if Self::is_acp_proxy_configured() {
+            return Ok(vec![InstallResult {
+                changed: false,
+                diff: None,
+                message: "Zed: ACP proxy already configured".to_string(),
+            }]);
+        }
+
+        let binary_path = params.binary_path.display().to_string();
+        let instructions = format!(
+            r#"Zed: Add the following to ~/.config/zed/settings.json:
+
+  "agent_servers": {{
+    "Claude Code (git-ai)": {{
+      "type": "custom",
+      "command": "{}",
+      "args": ["acp-proxy", "--", "claude"]
+    }}
+  }}"#,
+            binary_path
+        );
+
+        Ok(vec![InstallResult {
+            changed: true,
+            diff: None,
+            message: instructions,
+        }])
     }
 
     fn uninstall_hooks(

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 /// A tracked in-flight edit tool call
@@ -16,6 +16,12 @@ struct ProxyState {
     session_id: Option<String>,
     cwd: String,
     git_ai_binary: String,
+}
+
+/// Tracks in-flight checkpoint threads so we can wait for them before exiting.
+struct CheckpointTracker {
+    count: Mutex<usize>,
+    done: Condvar,
 }
 
 /// Read a Content-Length framed JSON-RPC message from a reader.
@@ -115,12 +121,20 @@ fn spawn_checkpoint(
     session_id: &str,
     cwd: &str,
     file_paths: &[String],
+    tracker: &Arc<CheckpointTracker>,
 ) {
     let binary = git_ai_binary.to_string();
     let event = hook_event_name.to_string();
     let sid = session_id.to_string();
     let wd = cwd.to_string();
     let fps = file_paths.to_vec();
+    let tracker = Arc::clone(tracker);
+
+    // Increment before spawning so the count is visible immediately
+    {
+        let mut count = tracker.count.lock().unwrap();
+        *count += 1;
+    }
 
     thread::spawn(move || {
         let payload = serde_json::json!({
@@ -150,12 +164,23 @@ fn spawn_checkpoint(
         if let Err(e) = result {
             eprintln!("[git-ai acp-proxy] checkpoint error: {}", e);
         }
+
+        // Decrement and notify regardless of success/failure
+        let mut count = tracker.count.lock().unwrap();
+        *count -= 1;
+        if *count == 0 {
+            tracker.done.notify_all();
+        }
     });
 }
 
 /// Inspect an agent→Zed message for tool_call / tool_call_update notifications.
 /// Returns true if the message was inspected (doesn't affect forwarding).
-fn inspect_agent_message(body: &str, state: &Arc<Mutex<ProxyState>>) {
+fn inspect_agent_message(
+    body: &str,
+    state: &Arc<Mutex<ProxyState>>,
+    tracker: &Arc<CheckpointTracker>,
+) {
     let parsed: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(_) => return, // Not valid JSON, skip
@@ -174,7 +199,6 @@ fn inspect_agent_message(body: &str, state: &Arc<Mutex<ProxyState>>) {
 
     match method {
         "session/update" => {
-            // session/update can carry tool_call or tool_call_update in its params
             // Extract session_id if present
             if let Some(sid) = params.get("sessionId").and_then(|v| v.as_str()) {
                 let mut st = state.lock().unwrap();
@@ -183,34 +207,32 @@ fn inspect_agent_message(body: &str, state: &Arc<Mutex<ProxyState>>) {
                 }
             }
 
-            if let Some(updates) = params.get("updates").and_then(|v| v.as_array()) {
-                for update in updates {
-                    let update_type = update.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    match update_type {
-                        "tool_call" => handle_tool_call(update, state),
-                        "tool_call_update" => handle_tool_call_update(update, state),
-                        _ => {}
-                    }
-                }
-            }
-
-            // Also check top-level tool_call / tool_call_update in params directly
-            if params.get("toolCallId").is_some() {
-                if params.get("status").is_some() {
-                    handle_tool_call_update(params, state);
-                } else if params.get("kind").is_some() {
-                    handle_tool_call(params, state);
+            // ACP protocol: params.update is a single SessionUpdate object
+            // discriminated by the "sessionUpdate" field
+            if let Some(update) = params.get("update") {
+                let update_type = update
+                    .get("sessionUpdate")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                match update_type {
+                    "tool_call" => handle_tool_call(update, state, tracker),
+                    "tool_call_update" => handle_tool_call_update(update, state, tracker),
+                    _ => {}
                 }
             }
         }
-        "tool_call" => handle_tool_call(params, state),
-        "tool_call_update" => handle_tool_call_update(params, state),
+        "tool_call" => handle_tool_call(params, state, tracker),
+        "tool_call_update" => handle_tool_call_update(params, state, tracker),
         _ => {}
     }
 }
 
 /// Handle a tool_call notification — if kind is edit-like, track it and spawn a human checkpoint.
-fn handle_tool_call(params: &serde_json::Value, state: &Arc<Mutex<ProxyState>>) {
+fn handle_tool_call(
+    params: &serde_json::Value,
+    state: &Arc<Mutex<ProxyState>>,
+    tracker: &Arc<CheckpointTracker>,
+) {
     let kind = match params.get("kind").and_then(|v| v.as_str()) {
         Some(k) => k,
         None => return,
@@ -247,13 +269,24 @@ fn handle_tool_call(params: &serde_json::Value, state: &Arc<Mutex<ProxyState>>) 
     };
 
     if !file_paths.is_empty() {
-        spawn_checkpoint(&git_ai_binary, "PreToolUse", &session_id, &cwd, &file_paths);
+        spawn_checkpoint(
+            &git_ai_binary,
+            "PreToolUse",
+            &session_id,
+            &cwd,
+            &file_paths,
+            tracker,
+        );
     }
 }
 
 /// Handle a tool_call_update notification — if status is completed for a tracked edit,
 /// spawn an AI checkpoint.
-fn handle_tool_call_update(params: &serde_json::Value, state: &Arc<Mutex<ProxyState>>) {
+fn handle_tool_call_update(
+    params: &serde_json::Value,
+    state: &Arc<Mutex<ProxyState>>,
+    tracker: &Arc<CheckpointTracker>,
+) {
     let tool_call_id = match params.get("toolCallId").and_then(|v| v.as_str()) {
         Some(id) => id,
         None => return,
@@ -306,6 +339,7 @@ fn handle_tool_call_update(params: &serde_json::Value, state: &Arc<Mutex<ProxySt
             &session_id,
             &cwd,
             &file_paths,
+            tracker,
         );
     }
 }
@@ -408,6 +442,11 @@ pub fn handle_acp_proxy(args: &[String]) {
         git_ai_binary,
     }));
 
+    let tracker = Arc::new(CheckpointTracker {
+        count: Mutex::new(0),
+        done: Condvar::new(),
+    });
+
     // Thread 1: Zed (our stdin) → Agent (child stdin)
     // Forward messages without inspection
     let _zed_to_agent = thread::spawn(move || {
@@ -434,6 +473,7 @@ pub fn handle_acp_proxy(args: &[String]) {
     // Thread 2: Agent (child stdout) → Zed (our stdout)
     // Forward messages with inspection for tool calls
     let state_clone = Arc::clone(&state);
+    let tracker_clone = Arc::clone(&tracker);
     let agent_to_zed = thread::spawn(move || {
         let mut reader = BufReader::new(child_stdout);
         let mut writer = io::stdout().lock();
@@ -442,7 +482,7 @@ pub fn handle_acp_proxy(args: &[String]) {
             match read_message(&mut reader) {
                 Ok(Some(body)) => {
                     // Inspect for tool call notifications (never fails the forward)
-                    inspect_agent_message(&body, &state_clone);
+                    inspect_agent_message(&body, &state_clone, &tracker_clone);
 
                     if let Err(e) = write_message(&mut writer, &body) {
                         eprintln!("[git-ai acp-proxy] write to Zed failed: {}", e);
@@ -464,13 +504,30 @@ pub fn handle_acp_proxy(args: &[String]) {
         std::process::exit(1);
     });
 
-    // Exit immediately with the agent's exit code.
-    // The zed_to_agent thread is blocked on stdin read and cannot be unblocked
-    // without closing the process's stdin (which we don't own). Calling
-    // process::exit here is safe because neither forwarding thread holds
-    // resources that require explicit cleanup.
+    // Wait for the agent_to_zed forwarding thread (returns quickly since child
+    // stdout is already closed) and then drain any in-flight checkpoint threads.
     let code = exit_status.code().unwrap_or(1);
-    let _ = agent_to_zed.join(); // agent stdout is closed, so this returns quickly
+    let _ = agent_to_zed.join();
+
+    // Wait for in-flight checkpoint threads (max 30s) so the final PostToolUse
+    // checkpoint is not lost when the agent exits immediately after its last tool call.
+    {
+        let mut count = tracker.count.lock().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while *count > 0 {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                eprintln!(
+                    "[git-ai acp-proxy] timed out waiting for {} checkpoint(s)",
+                    *count
+                );
+                break;
+            }
+            let (guard, _) = tracker.done.wait_timeout(count, remaining).unwrap();
+            count = guard;
+        }
+    }
+
     std::process::exit(code);
 }
 
@@ -583,6 +640,10 @@ mod tests {
             cwd: "/tmp".to_string(),
             git_ai_binary: "/usr/bin/false".to_string(), // won't actually run
         }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
 
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
@@ -594,7 +655,7 @@ mod tests {
             }
         });
 
-        inspect_agent_message(&msg.to_string(), &state);
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
 
         let st = state.lock().unwrap();
         assert!(st.tracked_edits.contains_key("tc-1"));
@@ -609,6 +670,10 @@ mod tests {
             cwd: "/tmp".to_string(),
             git_ai_binary: "/usr/bin/false".to_string(),
         }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
 
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
@@ -620,7 +685,7 @@ mod tests {
             }
         });
 
-        inspect_agent_message(&msg.to_string(), &state);
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
 
         let st = state.lock().unwrap();
         assert!(!st.tracked_edits.contains_key("tc-2"));
@@ -634,6 +699,10 @@ mod tests {
             cwd: "/tmp".to_string(),
             git_ai_binary: "/usr/bin/false".to_string(),
         }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
 
         // First, track a tool call
         {
@@ -655,7 +724,7 @@ mod tests {
             }
         });
 
-        inspect_agent_message(&msg.to_string(), &state);
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
 
         let st = state.lock().unwrap();
         // Should be removed from tracked after completion
@@ -670,6 +739,10 @@ mod tests {
             cwd: "/tmp".to_string(),
             git_ai_binary: "/usr/bin/false".to_string(),
         }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
 
         {
             let mut st = state.lock().unwrap();
@@ -690,7 +763,7 @@ mod tests {
             }
         });
 
-        inspect_agent_message(&msg.to_string(), &state);
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
 
         let st = state.lock().unwrap();
         assert!(!st.tracked_edits.contains_key("tc-4"));
@@ -704,20 +777,105 @@ mod tests {
             cwd: "/tmp".to_string(),
             git_ai_binary: "/usr/bin/false".to_string(),
         }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
 
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "session/update",
             "params": {
                 "sessionId": "acp-123",
-                "updates": []
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": []
+                }
             }
         });
 
-        inspect_agent_message(&msg.to_string(), &state);
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
 
         let st = state.lock().unwrap();
         assert_eq!(st.session_id, Some("acp-123".to_string()));
+    }
+
+    #[test]
+    fn test_inspect_session_update_tool_call() {
+        let state = Arc::new(Mutex::new(ProxyState {
+            tracked_edits: HashMap::new(),
+            session_id: Some("test-session".to_string()),
+            cwd: "/tmp".to_string(),
+            git_ai_binary: "/usr/bin/false".to_string(),
+        }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
+
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "test-session",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-acp-1",
+                    "kind": "edit",
+                    "title": "Edit file",
+                    "locations": [{"path": "src/lib.rs"}]
+                }
+            }
+        });
+
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
+
+        let st = state.lock().unwrap();
+        assert!(st.tracked_edits.contains_key("tc-acp-1"));
+        assert_eq!(st.tracked_edits["tc-acp-1"].file_paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn test_inspect_session_update_tool_call_update() {
+        let state = Arc::new(Mutex::new(ProxyState {
+            tracked_edits: HashMap::new(),
+            session_id: Some("test-session".to_string()),
+            cwd: "/tmp".to_string(),
+            git_ai_binary: "/usr/bin/false".to_string(),
+        }));
+        let tracker = Arc::new(CheckpointTracker {
+            count: Mutex::new(0),
+            done: Condvar::new(),
+        });
+
+        // Pre-track a tool call
+        {
+            let mut st = state.lock().unwrap();
+            st.tracked_edits.insert(
+                "tc-acp-2".to_string(),
+                TrackedToolCall {
+                    file_paths: vec!["src/lib.rs".to_string()],
+                },
+            );
+        }
+
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "test-session",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc-acp-2",
+                    "status": "completed"
+                }
+            }
+        });
+
+        inspect_agent_message(&msg.to_string(), &state, &tracker);
+
+        let st = state.lock().unwrap();
+        assert!(!st.tracked_edits.contains_key("tc-acp-2"));
     }
 
     #[test]
