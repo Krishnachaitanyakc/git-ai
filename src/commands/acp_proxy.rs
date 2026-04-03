@@ -410,7 +410,7 @@ pub fn handle_acp_proxy(args: &[String]) {
 
     // Thread 1: Zed (our stdin) → Agent (child stdin)
     // Forward messages without inspection
-    let zed_to_agent = thread::spawn(move || {
+    let _zed_to_agent = thread::spawn(move || {
         let mut reader = BufReader::new(io::stdin().lock());
         let mut writer = child_stdin;
 
@@ -464,12 +464,14 @@ pub fn handle_acp_proxy(args: &[String]) {
         std::process::exit(1);
     });
 
-    // Wait for forwarding threads
-    let _ = zed_to_agent.join();
-    let _ = agent_to_zed.join();
-
-    // Exit with the same code as the agent
-    std::process::exit(exit_status.code().unwrap_or(1));
+    // Exit immediately with the agent's exit code.
+    // The zed_to_agent thread is blocked on stdin read and cannot be unblocked
+    // without closing the process's stdin (which we don't own). Calling
+    // process::exit here is safe because neither forwarding thread holds
+    // resources that require explicit cleanup.
+    let code = exit_status.code().unwrap_or(1);
+    let _ = agent_to_zed.join(); // agent stdout is closed, so this returns quickly
+    std::process::exit(code);
 }
 
 #[cfg(test)]

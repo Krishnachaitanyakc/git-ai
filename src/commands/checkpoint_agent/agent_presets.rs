@@ -3662,9 +3662,9 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn test_claude_preset_skips_inside_acp_proxy() {
         // Set the env var that the ACP proxy sets on its child process
-        // SAFETY: This test is not run in parallel with other tests that depend on this env var.
         unsafe { std::env::set_var("GIT_AI_ACP_PROXY", "1") };
 
         let preset = ClaudePreset;
