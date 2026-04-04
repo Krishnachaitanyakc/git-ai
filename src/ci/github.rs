@@ -114,8 +114,12 @@ pub fn get_github_ci_context() -> Result<Option<CiContext>, GitAiError> {
     }))
 }
 
+/// Default repository for install script downloads
+const DEFAULT_REPO: &str = "git-ai-project/git-ai";
+
 /// Install or update the GitHub Actions workflow in the current repository
-/// Writes the embedded template to .github/workflows/git-ai.yaml at the repo root
+/// Writes the embedded template to .github/workflows/git-ai.yaml at the repo root,
+/// replacing placeholders with the current git-ai version and repository.
 pub fn install_github_ci_workflow() -> Result<PathBuf, GitAiError> {
     // Discover repository at current working directory
     let repo = find_repository_in_path(".")?;
@@ -126,10 +130,115 @@ pub fn install_github_ci_workflow() -> Result<PathBuf, GitAiError> {
     fs::create_dir_all(&workflows_dir)
         .map_err(|e| GitAiError::Generic(format!("Failed to create workflows dir: {}", e)))?;
 
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    // Replace placeholders with actual values
+    let workflow_content = GITHUB_CI_TEMPLATE_YAML
+        .replace("__GIT_AI_VERSION__", &version)
+        .replace("__GIT_AI_REPO__", DEFAULT_REPO);
+
     // Write template
     let dest_path = workflows_dir.join("git-ai.yaml");
-    fs::write(&dest_path, GITHUB_CI_TEMPLATE_YAML)
+    fs::write(&dest_path, workflow_content)
         .map_err(|e| GitAiError::Generic(format!("Failed to write workflow file: {}", e)))?;
 
     Ok(dest_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_github_ci_template_not_empty() {
+        assert!(
+            !GITHUB_CI_TEMPLATE_YAML.is_empty(),
+            "GitHub CI template YAML should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_template_contains_placeholders() {
+        assert!(
+            GITHUB_CI_TEMPLATE_YAML.contains("__GIT_AI_VERSION__"),
+            "Template should contain version placeholder"
+        );
+        assert!(
+            GITHUB_CI_TEMPLATE_YAML.contains("__GIT_AI_REPO__"),
+            "Template should contain repo placeholder"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_template_no_curl_pipe_bash() {
+        assert!(
+            !GITHUB_CI_TEMPLATE_YAML.contains("| bash"),
+            "Template should not use curl | bash pattern"
+        );
+        assert!(
+            !GITHUB_CI_TEMPLATE_YAML.contains("| sh"),
+            "Template should not use curl | sh pattern"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_template_no_usegitai_url() {
+        assert!(
+            !GITHUB_CI_TEMPLATE_YAML.contains("usegitai.com"),
+            "Template should not reference usegitai.com"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_template_downloads_to_file() {
+        assert!(
+            GITHUB_CI_TEMPLATE_YAML.contains("-o /tmp/git-ai-install.sh"),
+            "Template should download install script to file before executing"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_template_verifies_version() {
+        assert!(
+            GITHUB_CI_TEMPLATE_YAML.contains("Verify installed version"),
+            "Template should include a version verification step"
+        );
+        assert!(
+            GITHUB_CI_TEMPLATE_YAML.contains("version mismatch"),
+            "Template should check for version mismatch"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_placeholder_replacement() {
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let rendered = GITHUB_CI_TEMPLATE_YAML
+            .replace("__GIT_AI_VERSION__", &version)
+            .replace("__GIT_AI_REPO__", DEFAULT_REPO);
+
+        assert!(
+            !rendered.contains("__GIT_AI_VERSION__"),
+            "All version placeholders should be replaced"
+        );
+        assert!(
+            !rendered.contains("__GIT_AI_REPO__"),
+            "All repo placeholders should be replaced"
+        );
+        assert!(
+            rendered.contains(&version),
+            "Rendered template should contain the version"
+        );
+        assert!(
+            rendered.contains(DEFAULT_REPO),
+            "Rendered template should contain the repo"
+        );
+    }
+
+    #[test]
+    fn test_github_ci_template_uses_release_url() {
+        assert!(
+            GITHUB_CI_TEMPLATE_YAML.contains("github.com/__GIT_AI_REPO__/releases/download"),
+            "Template should use GitHub releases URL pattern"
+        );
+    }
 }

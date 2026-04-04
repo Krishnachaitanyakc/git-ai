@@ -275,11 +275,21 @@ pub fn get_gitlab_ci_context() -> Result<Option<CiContext>, GitAiError> {
     }))
 }
 
-/// Print the GitLab CI YAML snippet to stdout for users to copy into their .gitlab-ci.yml
+/// Default repository for install script downloads
+const DEFAULT_REPO: &str = "git-ai-project/git-ai";
+
+/// Print the GitLab CI YAML snippet to stdout for users to copy into their .gitlab-ci.yml,
+/// with version and repository placeholders replaced.
 pub fn print_gitlab_ci_yaml() {
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    let yaml = GITLAB_CI_TEMPLATE_YAML
+        .replace("__GIT_AI_VERSION__", &version)
+        .replace("__GIT_AI_REPO__", DEFAULT_REPO);
+
     println!("Add the following to your .gitlab-ci.yml:");
     println!();
-    println!("{}", GITLAB_CI_TEMPLATE_YAML);
+    println!("{}", yaml);
 }
 
 #[cfg(test)]
@@ -348,6 +358,87 @@ mod tests {
         assert!(
             !GITLAB_CI_TEMPLATE_YAML.is_empty(),
             "GitLab CI template YAML should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_template_contains_placeholders() {
+        assert!(
+            GITLAB_CI_TEMPLATE_YAML.contains("__GIT_AI_VERSION__"),
+            "Template should contain version placeholder"
+        );
+        assert!(
+            GITLAB_CI_TEMPLATE_YAML.contains("__GIT_AI_REPO__"),
+            "Template should contain repo placeholder"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_template_no_curl_pipe_bash() {
+        assert!(
+            !GITLAB_CI_TEMPLATE_YAML.contains("| bash"),
+            "Template should not use curl | bash pattern"
+        );
+        assert!(
+            !GITLAB_CI_TEMPLATE_YAML.contains("| sh"),
+            "Template should not use curl | sh pattern"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_template_no_usegitai_url() {
+        assert!(
+            !GITLAB_CI_TEMPLATE_YAML.contains("usegitai.com"),
+            "Template should not reference usegitai.com"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_template_downloads_to_file() {
+        assert!(
+            GITLAB_CI_TEMPLATE_YAML.contains("-o /tmp/git-ai-install.sh"),
+            "Template should download install script to file before executing"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_template_verifies_version() {
+        assert!(
+            GITLAB_CI_TEMPLATE_YAML.contains("version mismatch"),
+            "Template should check for version mismatch"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_placeholder_replacement() {
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let rendered = GITLAB_CI_TEMPLATE_YAML
+            .replace("__GIT_AI_VERSION__", &version)
+            .replace("__GIT_AI_REPO__", DEFAULT_REPO);
+
+        assert!(
+            !rendered.contains("__GIT_AI_VERSION__"),
+            "All version placeholders should be replaced"
+        );
+        assert!(
+            !rendered.contains("__GIT_AI_REPO__"),
+            "All repo placeholders should be replaced"
+        );
+        assert!(
+            rendered.contains(&version),
+            "Rendered template should contain the version"
+        );
+        assert!(
+            rendered.contains(DEFAULT_REPO),
+            "Rendered template should contain the repo"
+        );
+    }
+
+    #[test]
+    fn test_gitlab_ci_template_uses_release_url() {
+        assert!(
+            GITLAB_CI_TEMPLATE_YAML.contains("github.com/__GIT_AI_REPO__/releases/download"),
+            "Template should use GitHub releases URL pattern"
         );
     }
 }

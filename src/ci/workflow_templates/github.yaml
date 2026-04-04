@@ -11,11 +11,24 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      GIT_AI_VERSION: "__GIT_AI_VERSION__"
+
     steps:
-      - name: Install git-ai
+      - name: Install git-ai (pinned version with checksum verification)
         run: |
-          curl -fsSL https://usegitai.com/install.sh | bash
+          curl -fsSL "https://github.com/__GIT_AI_REPO__/releases/download/${{ env.GIT_AI_VERSION }}/install.sh" -o /tmp/git-ai-install.sh
+          bash /tmp/git-ai-install.sh
           echo "$HOME/.git-ai/bin" >> $GITHUB_PATH
+      - name: Verify installed version
+        run: |
+          INSTALLED=$(git-ai --version)
+          EXPECTED="${{ env.GIT_AI_VERSION }}"
+          EXPECTED="${EXPECTED#v}"
+          if [ "$INSTALLED" != "$EXPECTED" ]; then
+            echo "::error::git-ai version mismatch: expected $EXPECTED, got $INSTALLED"
+            exit 1
+          fi
       - name: Run git-ai
         id: run-git-ai
         env:
