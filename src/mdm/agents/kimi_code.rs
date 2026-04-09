@@ -171,6 +171,7 @@ impl HookInstaller for KimiCodeInstaller {
         let new_content = toml::to_string_pretty(&parsed)
             .map_err(|e| GitAiError::Generic(format!("Failed to serialize Kimi config.toml: {e}")))?;
 
+        println!("{}", new_content);
         if existing_content == new_content {
             return Ok(None);
         }

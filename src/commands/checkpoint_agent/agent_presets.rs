@@ -4318,12 +4318,13 @@ impl AgentCheckpointPreset for KimiCodePreset {
         let model = hook_data
             .get("model")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Self::read_default_model().unwrap_or_else(|| "unknown".to_string()));
 
         let agent_id = AgentId {
             tool: "kimi-code".to_string(),
             id: session_id.to_string(),
-            model: model.to_string(),
+            model,
         };
 
         // Classify tool for bash detection
@@ -4436,6 +4437,18 @@ impl AgentCheckpointPreset for KimiCodePreset {
 }
 
 impl KimiCodePreset {
+    /// Read default_model from ~/.kimi/config.toml.
+    fn read_default_model() -> Option<String> {
+        let config_path = dirs::home_dir()?.join(".kimi").join("config.toml");
+        let content = std::fs::read_to_string(config_path).ok()?;
+        let parsed: toml::Value = toml::from_str(&content).ok()?;
+        parsed
+            .get("default_model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    }
+
     /// Resolve the path to a Kimi Code session's context.jsonl file.
     /// Session layout: <base>/sessions/<work-dir-hash>/<session_id>/context.jsonl
     /// We scan work-dir-hash dirs rather than computing the hash to avoid an extra dependency.
