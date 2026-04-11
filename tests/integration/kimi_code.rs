@@ -6,6 +6,7 @@ use git_ai::commands::checkpoint_agent::agent_presets::{
     AgentCheckpointFlags, AgentCheckpointPreset, KimiCodePreset,
 };
 use serde_json::json;
+use serial_test::serial;
 use std::fs;
 
 // ============================================================================
@@ -645,6 +646,7 @@ fn test_kimi_code_transcript_from_context_jsonl() {
 }
 
 #[test]
+#[serial]
 fn test_kimi_code_session_transcript_from_disk() {
     use std::io::Write;
     let temp_dir = tempfile::tempdir().unwrap();
