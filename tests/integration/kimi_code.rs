@@ -695,7 +695,10 @@ fn test_kimi_code_session_transcript_from_disk() {
         }
     }
 
-    assert!(result.transcript.is_some(), "Should resolve transcript from session file");
+    assert!(
+        result.transcript.is_some(),
+        "Should resolve transcript from session file"
+    );
     let transcript = result.transcript.unwrap();
     assert_eq!(transcript.messages().len(), 2);
     assert!(matches!(&transcript.messages()[0], Message::User { text, .. } if text == "Hello"));
@@ -723,5 +726,9 @@ reuse_tests_in_worktree!(
     test_kimi_code_bash_post_tool_use_diffs_changed_files,
     test_kimi_code_non_bash_tool_uses_file_path,
     test_kimi_code_transcript_from_context_jsonl,
+);
+
+crate::reuse_tests_in_worktree_with_attrs!(
+    (#[serial])
     test_kimi_code_session_transcript_from_disk,
 );

@@ -4466,10 +4466,7 @@ impl KimiCodePreset {
 
         let entries = std::fs::read_dir(&sessions_dir).ok()?;
         for entry in entries.flatten() {
-            let context_path = entry
-                .path()
-                .join(session_id)
-                .join("context.jsonl");
+            let context_path = entry.path().join(session_id).join("context.jsonl");
             if context_path.exists() {
                 return Some(context_path);
             }
@@ -4479,9 +4476,7 @@ impl KimiCodePreset {
     }
 
     /// Read a Kimi Code session's context.jsonl and build an AiTranscript.
-    fn resolve_session_transcript(
-        session_id: &str,
-    ) -> Result<Option<AiTranscript>, GitAiError> {
+    fn resolve_session_transcript(session_id: &str) -> Result<Option<AiTranscript>, GitAiError> {
         let context_path = match Self::resolve_session_path(session_id) {
             Some(path) => path,
             None => return Ok(None),
@@ -4511,23 +4506,21 @@ impl KimiCodePreset {
 
             match role {
                 "user" => {
-                    if let Some(text) = obj.get("content").and_then(|v| v.as_str()) {
-                        if !text.trim().is_empty() {
-                            transcript.add_message(Message::User {
-                                text: text.to_string(),
-                                timestamp: None,
-                            });
-                        }
+                    if let Some(text) = obj.get("content").and_then(|v| v.as_str())
+                        && !text.trim().is_empty()
+                    {
+                        transcript.add_message(Message::User {
+                            text: text.to_string(),
+                            timestamp: None,
+                        });
                     }
                 }
                 "assistant" => {
                     // content is an array of {type, text} parts
                     if let Some(parts) = obj.get("content").and_then(|v| v.as_array()) {
                         for part in parts {
-                            let part_type =
-                                part.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            let text =
-                                part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
                             if part_type == "text" && !text.trim().is_empty() {
                                 transcript.add_message(Message::Assistant {
                                     text: text.to_string(),
