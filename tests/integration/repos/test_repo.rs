@@ -811,6 +811,7 @@ fn is_known_checkpoint_preset(arg: &str) -> bool {
     matches!(
         arg,
         "claude"
+            | "codebuddy"
             | "codex"
             | "continue-cli"
             | "cursor"
